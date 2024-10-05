@@ -8,16 +8,20 @@
 package main
 
 import (
+	"bufio"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/pion/rtcp"
 	"github.com/pion/rtp"
-	"github.com/pion/webrtc/v3"
-	"github.com/pion/webrtc/v3/examples/internal/signal"
+	"github.com/pion/webrtc/v4"
 )
 
 func main() { // nolint:gocognit
@@ -68,7 +72,7 @@ func main() { // nolint:gocognit
 
 	// Wait for the offer to be pasted
 	offer := webrtc.SessionDescription{}
-	signal.Decode(signal.MustReadStdin(), &offer)
+	decode(readUntilNewline(), &offer)
 
 	// Set the remote SessionDescription
 	err = peerConnection.SetRemoteDescription(offer)
@@ -84,7 +88,7 @@ func main() { // nolint:gocognit
 	packets := make(chan *rtp.Packet, 60)
 
 	// Set a handler for when a new remote track starts
-	peerConnection.OnTrack(func(track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver) {
+	peerConnection.OnTrack(func(track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver) { //nolint: revive
 		fmt.Printf("Track has started, of type %d: %s \n", track.PayloadType(), track.Codec().MimeType)
 		trackNum := trackCount
 		trackCount++
@@ -115,8 +119,10 @@ func main() { // nolint:gocognit
 				// If just switched to this track, send PLI to get picture refresh
 				if !isCurrTrack {
 					isCurrTrack = true
-					if writeErr := peerConnection.WriteRTCP([]rtcp.Packet{&rtcp.PictureLossIndication{MediaSSRC: uint32(track.SSRC())}}); writeErr != nil {
-						fmt.Println(writeErr)
+					if track.Kind() == webrtc.RTPCodecTypeVideo {
+						if writeErr := peerConnection.WriteRTCP([]rtcp.Packet{&rtcp.PictureLossIndication{MediaSSRC: uint32(track.SSRC())}}); writeErr != nil {
+							fmt.Println(writeErr)
+						}
 					}
 				}
 				packets <- rtp
@@ -137,6 +143,11 @@ func main() { // nolint:gocognit
 			// Wait until PeerConnection has had no network activity for 30 seconds or another failure. It may be reconnected using an ICE Restart.
 			// Use webrtc.PeerConnectionStateDisconnected if you are interested in detecting faster timeout.
 			// Note that the PeerConnection may come back from PeerConnectionStateDisconnected.
+			done()
+		}
+
+		if s == webrtc.PeerConnectionStateClosed {
+			// PeerConnection was explicitly closed. This usually happens from a DTLS CloseNotify
 			done()
 		}
 	})
@@ -161,7 +172,7 @@ func main() { // nolint:gocognit
 	// in a production application you should exchange ICE Candidates via OnICECandidate
 	<-gatherComplete
 
-	fmt.Println(signal.Encode(*peerConnection.LocalDescription()))
+	fmt.Println(encode(peerConnection.LocalDescription()))
 
 	// Asynchronously take all packets in the channel and write them out to our
 	// track
@@ -208,5 +219,47 @@ func main() { // nolint:gocognit
 			currTrack++
 		}
 		fmt.Printf("Switched to track #%v\n", currTrack+1)
+	}
+}
+
+// Read from stdin until we get a newline
+func readUntilNewline() (in string) {
+	var err error
+
+	r := bufio.NewReader(os.Stdin)
+	for {
+		in, err = r.ReadString('\n')
+		if err != nil && !errors.Is(err, io.EOF) {
+			panic(err)
+		}
+
+		if in = strings.TrimSpace(in); len(in) > 0 {
+			break
+		}
+	}
+
+	fmt.Println("")
+	return
+}
+
+// JSON encode + base64 a SessionDescription
+func encode(obj *webrtc.SessionDescription) string {
+	b, err := json.Marshal(obj)
+	if err != nil {
+		panic(err)
+	}
+
+	return base64.StdEncoding.EncodeToString(b)
+}
+
+// Decode a base64 and unmarshal JSON into a SessionDescription
+func decode(in string, obj *webrtc.SessionDescription) {
+	b, err := base64.StdEncoding.DecodeString(in)
+	if err != nil {
+		panic(err)
+	}
+
+	if err = json.Unmarshal(b, obj); err != nil {
+		panic(err)
 	}
 }

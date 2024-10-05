@@ -11,8 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pion/transport/v2/test"
-	"github.com/pion/webrtc/v3/pkg/media"
+	"github.com/pion/interceptor"
+	"github.com/pion/transport/v3/test"
+	"github.com/pion/webrtc/v4/pkg/media"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -25,7 +26,7 @@ func Test_RTPReceiver_SetReadDeadline(t *testing.T) {
 	report := test.CheckRoutines(t)
 	defer report()
 
-	sender, receiver, wan := createVNetPair(t)
+	sender, receiver, wan := createVNetPair(t, &interceptor.Registry{})
 
 	track, err := NewTrackLocalStaticSample(RTPCodecCapability{MimeType: MimeTypeVP8}, "video", "pion")
 	assert.NoError(t, err)

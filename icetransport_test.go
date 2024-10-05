@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pion/transport/v2/test"
+	"github.com/pion/transport/v3/test"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -75,7 +75,7 @@ func TestICETransport_OnSelectedCandidatePairChange(t *testing.T) {
 	})
 
 	senderCalledCandidateChange := int32(0)
-	pcOffer.SCTP().Transport().ICETransport().OnSelectedCandidatePairChange(func(pair *ICECandidatePair) {
+	pcOffer.SCTP().Transport().ICETransport().OnSelectedCandidatePairChange(func(*ICECandidatePair) {
 		atomic.StoreInt32(&senderCalledCandidateChange, 1)
 	})
 
@@ -113,6 +113,23 @@ func TestICETransport_GetSelectedCandidatePair(t *testing.T) {
 	answererSelectedPair, err = answerer.SCTP().Transport().ICETransport().GetSelectedCandidatePair()
 	assert.NoError(t, err)
 	assert.NotNil(t, answererSelectedPair)
+
+	closePairNow(t, offerer, answerer)
+}
+
+func TestICETransport_GetLocalParameters(t *testing.T) {
+	offerer, answerer, err := newPair()
+	assert.NoError(t, err)
+
+	peerConnectionConnected := untilConnectionState(PeerConnectionStateConnected, offerer, answerer)
+
+	assert.NoError(t, signalPair(offerer, answerer))
+	peerConnectionConnected.Wait()
+
+	localParameters, err := offerer.SCTP().Transport().ICETransport().GetLocalParameters()
+	assert.NoError(t, err)
+	assert.NotEqual(t, localParameters.UsernameFragment, "")
+	assert.NotEqual(t, localParameters.Password, "")
 
 	closePairNow(t, offerer, answerer)
 }

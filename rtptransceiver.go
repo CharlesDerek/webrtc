@@ -42,7 +42,7 @@ func newRTPTransceiver(
 	t.setReceiver(receiver)
 	t.setSender(sender)
 	t.setDirection(direction)
-	t.setCurrentDirection(RTPTransceiverDirection(Unknown))
+	t.setCurrentDirection(RTPTransceiverDirectionUnknown)
 	return t
 }
 
@@ -193,7 +193,7 @@ func (t *RTPTransceiver) getCurrentDirection() RTPTransceiverDirection {
 	if v, ok := t.currentDirection.Load().(RTPTransceiverDirection); ok {
 		return v
 	}
-	return RTPTransceiverDirection(Unknown)
+	return RTPTransceiverDirectionUnknown
 }
 
 func (t *RTPTransceiver) setSendingTrack(track TrackLocal) error {
@@ -266,10 +266,14 @@ func satisfyTypeAndDirection(remoteKind RTPCodecType, remoteDirection RTPTransce
 
 // handleUnknownRTPPacket consumes a single RTP Packet and returns information that is helpful
 // for demuxing and handling an unknown SSRC (usually for Simulcast)
-func handleUnknownRTPPacket(buf []byte, midExtensionID, streamIDExtensionID, repairStreamIDExtensionID uint8, mid, rid, rsid *string) (payloadType PayloadType, err error) {
+func handleUnknownRTPPacket(buf []byte, midExtensionID, streamIDExtensionID, repairStreamIDExtensionID uint8, mid, rid, rsid *string) (payloadType PayloadType, paddingOnly bool, err error) {
 	rp := &rtp.Packet{}
 	if err = rp.Unmarshal(buf); err != nil {
 		return
+	}
+
+	if rp.Padding && len(rp.Payload) == 0 {
+		paddingOnly = true
 	}
 
 	if !rp.Header.Extension {

@@ -15,7 +15,7 @@ import (
 	"strings"
 	"sync/atomic"
 
-	"github.com/pion/ice/v2"
+	"github.com/pion/ice/v4"
 	"github.com/pion/logging"
 	"github.com/pion/sdp/v3"
 )
@@ -85,7 +85,7 @@ func trackDetailsFromSDP(log logging.LeveledLogger, s *sdp.SessionDescription) (
 		tracksInMediaSection := []trackDetails{}
 		rtxRepairFlows := map[uint64]uint64{}
 
-		// Plan B can have multiple tracks in a signle media section
+		// Plan B can have multiple tracks in a single media section
 		streamID := ""
 		trackID := ""
 
@@ -128,6 +128,12 @@ func trackDetailsFromSDP(log logging.LeveledLogger, s *sdp.SessionDescription) (
 						}
 						rtxRepairFlows[rtxRepairFlow] = baseSsrc
 						tracksInMediaSection = filterTrackWithSSRC(tracksInMediaSection, SSRC(rtxRepairFlow)) // Remove if rtx was added as track before
+						for i := range tracksInMediaSection {
+							if tracksInMediaSection[i].ssrcs[0] == SSRC(baseSsrc) {
+								repairSsrc := SSRC(rtxRepairFlow)
+								tracksInMediaSection[i].repairSsrc = &repairSsrc
+							}
+						}
 					}
 				}
 
@@ -196,8 +202,8 @@ func trackDetailsFromSDP(log logging.LeveledLogger, s *sdp.SessionDescription) (
 				id:       trackID,
 				rids:     []string{},
 			}
-			for rid := range rids {
-				simulcastTrack.rids = append(simulcastTrack.rids, rid)
+			for _, rid := range rids {
+				simulcastTrack.rids = append(simulcastTrack.rids, rid.id)
 			}
 
 			tracksInMediaSection = []trackDetails{simulcastTrack}
@@ -232,12 +238,33 @@ func trackDetailsToRTPReceiveParameters(t *trackDetails) RTPReceiveParameters {
 	return RTPReceiveParameters{Encodings: encodings}
 }
 
-func getRids(media *sdp.MediaDescription) map[string]string {
-	rids := map[string]string{}
+func getRids(media *sdp.MediaDescription) []*simulcastRid {
+	rids := []*simulcastRid{}
+	var simulcastAttr string
 	for _, attr := range media.Attributes {
 		if attr.Key == sdpAttributeRid {
 			split := strings.Split(attr.Value, " ")
-			rids[split[0]] = attr.Value
+			rids = append(rids, &simulcastRid{id: split[0], attrValue: attr.Value})
+		} else if attr.Key == sdpAttributeSimulcast {
+			simulcastAttr = attr.Value
+		}
+	}
+	// process paused stream like "a=simulcast:send 1;~2;~3"
+	if simulcastAttr != "" {
+		if space := strings.Index(simulcastAttr, " "); space > 0 {
+			simulcastAttr = simulcastAttr[space+1:]
+		}
+		ridStates := strings.Split(simulcastAttr, ";")
+		for _, ridState := range ridStates {
+			if ridState[:1] == "~" {
+				ridID := ridState[1:]
+				for _, rid := range rids {
+					if rid.id == ridID {
+						rid.paused = true
+						break
+					}
+				}
+			}
 		}
 	}
 	return rids
@@ -365,7 +392,16 @@ func addSenderSDP(
 
 		sendParameters := sender.GetParameters()
 		for _, encoding := range sendParameters.Encodings {
+			if encoding.RTX.SSRC != 0 {
+				media = media.WithValueAttribute("ssrc-group", fmt.Sprintf("FID %d %d", encoding.SSRC, encoding.RTX.SSRC))
+			}
+
+			if encoding.FEC.SSRC != 0 {
+				media = media.WithValueAttribute("ssrc-group", fmt.Sprintf("FEC-FR %d %d", encoding.SSRC, encoding.FEC.SSRC))
+			}
+
 			media = media.WithMediaSource(uint32(encoding.SSRC), track.StreamID() /* cname */, track.StreamID() /* streamLabel */, track.ID())
+
 			if !isPlanB {
 				media = media.WithPropertyAttribute("msid:" + track.StreamID() + " " + track.ID())
 			}
@@ -379,7 +415,7 @@ func addSenderSDP(
 				sendRids = append(sendRids, encoding.RID)
 			}
 			// Simulcast
-			media.WithValueAttribute("simulcast", "send "+strings.Join(sendRids, ";"))
+			media.WithValueAttribute(sdpAttributeSimulcast, "send "+strings.Join(sendRids, ";"))
 		}
 
 		if !isPlanB {
@@ -463,6 +499,11 @@ func addTransceiverSDP(
 
 	parameters := mediaEngine.getRTPParametersByKind(t.kind, directions)
 	for _, rtpExtension := range parameters.HeaderExtensions {
+		if mediaSection.matchExtensions != nil {
+			if _, enabled := mediaSection.matchExtensions[rtpExtension.URI]; !enabled {
+				continue
+			}
+		}
 		extURL, err := url.Parse(rtpExtension.URI)
 		if err != nil {
 			return false, err
@@ -470,15 +511,19 @@ func addTransceiverSDP(
 		media.WithExtMap(sdp.ExtMap{Value: rtpExtension.ID, URI: extURL})
 	}
 
-	if len(mediaSection.ridMap) > 0 {
-		recvRids := make([]string, 0, len(mediaSection.ridMap))
+	if len(mediaSection.rids) > 0 {
+		recvRids := make([]string, 0, len(mediaSection.rids))
 
-		for rid := range mediaSection.ridMap {
-			media.WithValueAttribute(sdpAttributeRid, rid+" recv")
-			recvRids = append(recvRids, rid)
+		for _, rid := range mediaSection.rids {
+			ridID := rid.id
+			media.WithValueAttribute(sdpAttributeRid, ridID+" recv")
+			if rid.paused {
+				ridID = "~" + ridID
+			}
+			recvRids = append(recvRids, ridID)
 		}
 		// Simulcast
-		media.WithValueAttribute("simulcast", "recv "+strings.Join(recvRids, ";"))
+		media.WithValueAttribute(sdpAttributeSimulcast, "recv "+strings.Join(recvRids, ";"))
 	}
 
 	addSenderSDP(mediaSection, isPlanB, media)
@@ -500,15 +545,53 @@ func addTransceiverSDP(
 	return true, nil
 }
 
+type simulcastRid struct {
+	id        string
+	attrValue string
+	paused    bool
+}
+
 type mediaSection struct {
-	id           string
-	transceivers []*RTPTransceiver
-	data         bool
-	ridMap       map[string]string
+	id              string
+	transceivers    []*RTPTransceiver
+	data            bool
+	matchExtensions map[string]int
+	rids            []*simulcastRid
+}
+
+func bundleMatchFromRemote(matchBundleGroup *string) func(mid string) bool {
+	if matchBundleGroup == nil {
+		return func(string) bool {
+			return true
+		}
+	}
+	bundleTags := strings.Split(*matchBundleGroup, " ")
+	return func(midValue string) bool {
+		for _, tag := range bundleTags {
+			if tag == midValue {
+				return true
+			}
+		}
+		return false
+	}
 }
 
 // populateSDP serializes a PeerConnections state into an SDP
-func populateSDP(d *sdp.SessionDescription, isPlanB bool, dtlsFingerprints []DTLSFingerprint, mediaDescriptionFingerprint bool, isICELite bool, isExtmapAllowMixed bool, mediaEngine *MediaEngine, connectionRole sdp.ConnectionRole, candidates []ICECandidate, iceParams ICEParameters, mediaSections []mediaSection, iceGatheringState ICEGatheringState) (*sdp.SessionDescription, error) {
+func populateSDP(
+	d *sdp.SessionDescription,
+	isPlanB bool,
+	dtlsFingerprints []DTLSFingerprint,
+	mediaDescriptionFingerprint bool,
+	isICELite bool,
+	isExtmapAllowMixed bool,
+	mediaEngine *MediaEngine,
+	connectionRole sdp.ConnectionRole,
+	candidates []ICECandidate,
+	iceParams ICEParameters,
+	mediaSections []mediaSection,
+	iceGatheringState ICEGatheringState,
+	matchBundleGroup *string,
+) (*sdp.SessionDescription, error) {
 	var err error
 	mediaDtlsFingerprints := []DTLSFingerprint{}
 
@@ -518,6 +601,8 @@ func populateSDP(d *sdp.SessionDescription, isPlanB bool, dtlsFingerprints []DTL
 
 	bundleValue := "BUNDLE"
 	bundleCount := 0
+
+	bundleMatch := bundleMatchFromRemote(matchBundleGroup)
 	appendBundle := func(midValue string) {
 		bundleValue += " " + midValue
 		bundleCount++
@@ -544,7 +629,11 @@ func populateSDP(d *sdp.SessionDescription, isPlanB bool, dtlsFingerprints []DTL
 		}
 
 		if shouldAddID {
-			appendBundle(m.id)
+			if bundleMatch(m.id) {
+				appendBundle(m.id)
+			} else {
+				d.MediaDescriptions[len(d.MediaDescriptions)-1].MediaName.Port = sdp.RangedPort{Value: 0}
+			}
 		}
 	}
 
@@ -563,7 +652,10 @@ func populateSDP(d *sdp.SessionDescription, isPlanB bool, dtlsFingerprints []DTL
 		d = d.WithPropertyAttribute(sdp.AttrKeyExtMapAllowMixed)
 	}
 
-	return d.WithValueAttribute(sdp.AttrKeyGroup, bundleValue), nil
+	if bundleCount > 0 {
+		d = d.WithValueAttribute(sdp.AttrKeyGroup, bundleValue)
+	}
+	return d, nil
 }
 
 func getMidValue(media *sdp.MediaDescription) string {
@@ -613,11 +705,11 @@ func descriptionPossiblyPlanB(desc *SessionDescription) bool {
 
 func getPeerDirection(media *sdp.MediaDescription) RTPTransceiverDirection {
 	for _, a := range media.Attributes {
-		if direction := NewRTPTransceiverDirection(a.Key); direction != RTPTransceiverDirection(Unknown) {
+		if direction := NewRTPTransceiverDirection(a.Key); direction != RTPTransceiverDirectionUnknown {
 			return direction
 		}
 	}
-	return RTPTransceiverDirection(Unknown)
+	return RTPTransceiverDirectionUnknown
 }
 
 func extractFingerprint(desc *sdp.SessionDescription) (string, string, error) {

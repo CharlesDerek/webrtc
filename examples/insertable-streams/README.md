@@ -4,7 +4,7 @@ This example modifies the video with a single-byte XOR cipher before sending, an
 decrypts in Javascript.
 
 insertable-streams allows the browser to process encoded video. You could implement
-E2E encyption, add metadata or insert a completely different video feed!
+E2E encryption, add metadata or insert a completely different video feed!
 
 ## Instructions
 ### Create IVF named `output.ivf` that contains a VP8 track
@@ -14,8 +14,7 @@ ffmpeg -i $INPUT_FILE -g 30 output.ivf
 
 ### Download insertable-streams
 ```
-export GO111MODULE=on
-go get github.com/pion/webrtc/v3/examples/insertable-streams
+go install github.com/pion/webrtc/v4/examples/insertable-streams@latest
 ```
 
 ### Open insertable-streams example page

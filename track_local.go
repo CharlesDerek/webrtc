@@ -19,45 +19,83 @@ type TrackLocalWriter interface {
 
 // TrackLocalContext is the Context passed when a TrackLocal has been Binded/Unbinded from a PeerConnection, and used
 // in Interceptors.
-type TrackLocalContext struct {
-	id              string
-	params          RTPParameters
-	ssrc            SSRC
-	writeStream     TrackLocalWriter
-	rtcpInterceptor interceptor.RTCPReader
+type TrackLocalContext interface {
+	// CodecParameters returns the negotiated RTPCodecParameters. These are the codecs supported by both
+	// PeerConnections and the PayloadTypes
+	CodecParameters() []RTPCodecParameters
+
+	// HeaderExtensions returns the negotiated RTPHeaderExtensionParameters. These are the header extensions supported by
+	// both PeerConnections and the URI/IDs
+	HeaderExtensions() []RTPHeaderExtensionParameter
+
+	// SSRC returns the negotiated SSRC of this track
+	SSRC() SSRC
+
+	// SSRCRetransmission returns the negotiated SSRC used to send retransmissions for this track
+	SSRCRetransmission() SSRC
+
+	// SSRCForwardErrorCorrection returns the negotiated SSRC to send forward error correction for this track
+	SSRCForwardErrorCorrection() SSRC
+
+	// WriteStream returns the WriteStream for this TrackLocal. The implementer writes the outbound
+	// media packets to it
+	WriteStream() TrackLocalWriter
+
+	// ID is a unique identifier that is used for both Bind/Unbind
+	ID() string
+
+	// RTCPReader returns the RTCP interceptor for this TrackLocal. Used to read RTCP of this TrackLocal.
+	RTCPReader() interceptor.RTCPReader
+}
+
+type baseTrackLocalContext struct {
+	id                     string
+	params                 RTPParameters
+	ssrc, ssrcRTX, ssrcFEC SSRC
+	writeStream            TrackLocalWriter
+	rtcpInterceptor        interceptor.RTCPReader
 }
 
 // CodecParameters returns the negotiated RTPCodecParameters. These are the codecs supported by both
 // PeerConnections and the SSRC/PayloadTypes
-func (t *TrackLocalContext) CodecParameters() []RTPCodecParameters {
+func (t *baseTrackLocalContext) CodecParameters() []RTPCodecParameters {
 	return t.params.Codecs
 }
 
 // HeaderExtensions returns the negotiated RTPHeaderExtensionParameters. These are the header extensions supported by
 // both PeerConnections and the SSRC/PayloadTypes
-func (t *TrackLocalContext) HeaderExtensions() []RTPHeaderExtensionParameter {
+func (t *baseTrackLocalContext) HeaderExtensions() []RTPHeaderExtensionParameter {
 	return t.params.HeaderExtensions
 }
 
 // SSRC requires the negotiated SSRC of this track
-// This track may have multiple if RTX is enabled
-func (t *TrackLocalContext) SSRC() SSRC {
+func (t *baseTrackLocalContext) SSRC() SSRC {
 	return t.ssrc
+}
+
+// SSRCRetransmission returns the negotiated SSRC used to send retransmissions for this track
+func (t *baseTrackLocalContext) SSRCRetransmission() SSRC {
+	return t.ssrcRTX
+}
+
+// SSRCForwardErrorCorrection returns the negotiated SSRC to send forward error correction for this track
+func (t *baseTrackLocalContext) SSRCForwardErrorCorrection() SSRC {
+	return t.ssrcFEC
 }
 
 // WriteStream returns the WriteStream for this TrackLocal. The implementer writes the outbound
 // media packets to it
-func (t *TrackLocalContext) WriteStream() TrackLocalWriter {
+func (t *baseTrackLocalContext) WriteStream() TrackLocalWriter {
 	return t.writeStream
 }
 
 // ID is a unique identifier that is used for both Bind/Unbind
-func (t *TrackLocalContext) ID() string {
+func (t *baseTrackLocalContext) ID() string {
 	return t.id
 }
 
 // RTCPReader returns the RTCP interceptor for this TrackLocal. Used to read RTCP of this TrackLocal.
-func (t *TrackLocalContext) RTCPReader() interceptor.RTCPReader {
+func (t *baseTrackLocalContext) RTCPReader() interceptor.RTCPReader {
 	return t.rtcpInterceptor
 }
 

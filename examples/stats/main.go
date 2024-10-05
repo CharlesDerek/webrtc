@@ -8,14 +8,24 @@
 package main
 
 import (
+	"bufio"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"os"
+	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/pion/interceptor"
 	"github.com/pion/interceptor/pkg/stats"
-	"github.com/pion/webrtc/v3"
-	"github.com/pion/webrtc/v3/examples/internal/signal"
+	"github.com/pion/webrtc/v4"
 )
+
+// How ofter to print WebRTC stats
+const statsInterval = time.Second * 5
 
 // nolint:gocognit
 func main() {
@@ -77,17 +87,18 @@ func main() {
 
 	// Set a handler for when a new remote track starts. We read the incoming packets, but then
 	// immediately discard them
-	peerConnection.OnTrack(func(track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver) {
+	peerConnection.OnTrack(func(track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver) { //nolint: revive
 		fmt.Printf("New incoming track with codec: %s\n", track.Codec().MimeType)
 
 		go func() {
+			// Print the stats for this individual track
 			for {
 				stats := statsGetter.Get(uint32(track.SSRC()))
 
 				fmt.Printf("Stats for: %s\n", track.Codec().MimeType)
 				fmt.Println(stats.InboundRTPStreamStats)
 
-				time.Sleep(time.Second * 5)
+				time.Sleep(statsInterval)
 			}
 		}()
 
@@ -100,15 +111,19 @@ func main() {
 		}
 	})
 
+	var iceConnectionState atomic.Value
+	iceConnectionState.Store(webrtc.ICEConnectionStateNew)
+
 	// Set the handler for ICE connection state
 	// This will notify you when the peer has connected/disconnected
 	peerConnection.OnICEConnectionStateChange(func(connectionState webrtc.ICEConnectionState) {
 		fmt.Printf("Connection State has changed %s \n", connectionState.String())
+		iceConnectionState.Store(connectionState)
 	})
 
 	// Wait for the offer to be pasted
 	offer := webrtc.SessionDescription{}
-	signal.Decode(signal.MustReadStdin(), &offer)
+	decode(readUntilNewline(), &offer)
 
 	// Set the remote SessionDescription
 	err = peerConnection.SetRemoteDescription(offer)
@@ -137,8 +152,67 @@ func main() {
 	<-gatherComplete
 
 	// Output the answer in base64 so we can paste it in browser
-	fmt.Println(signal.Encode(*peerConnection.LocalDescription()))
+	fmt.Println(encode(peerConnection.LocalDescription()))
 
-	// Block forever
-	select {}
+	for {
+		time.Sleep(statsInterval)
+
+		// Stats are only printed after completed to make Copy/Pasting easier
+		if iceConnectionState.Load() == webrtc.ICEConnectionStateChecking {
+			continue
+		}
+
+		// Only print the remote IPs seen
+		for _, s := range peerConnection.GetStats() {
+			switch stat := s.(type) {
+			case webrtc.ICECandidateStats:
+				if stat.Type == webrtc.StatsTypeRemoteCandidate {
+					fmt.Printf("%s IP(%s) Port(%d)\n", stat.Type, stat.IP, stat.Port)
+				}
+			default:
+			}
+		}
+	}
+}
+
+// Read from stdin until we get a newline
+func readUntilNewline() (in string) {
+	var err error
+
+	r := bufio.NewReader(os.Stdin)
+	for {
+		in, err = r.ReadString('\n')
+		if err != nil && !errors.Is(err, io.EOF) {
+			panic(err)
+		}
+
+		if in = strings.TrimSpace(in); len(in) > 0 {
+			break
+		}
+	}
+
+	fmt.Println("")
+	return
+}
+
+// JSON encode + base64 a SessionDescription
+func encode(obj *webrtc.SessionDescription) string {
+	b, err := json.Marshal(obj)
+	if err != nil {
+		panic(err)
+	}
+
+	return base64.StdEncoding.EncodeToString(b)
+}
+
+// Decode a base64 and unmarshal JSON into a SessionDescription
+func decode(in string, obj *webrtc.SessionDescription) {
+	b, err := base64.StdEncoding.DecodeString(in)
+	if err != nil {
+		panic(err)
+	}
+
+	if err = json.Unmarshal(b, obj); err != nil {
+		panic(err)
+	}
 }

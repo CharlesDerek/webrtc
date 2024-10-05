@@ -7,12 +7,16 @@
 package webrtc
 
 import (
+	"context"
 	"net"
 	"testing"
 	"time"
 
-	"github.com/pion/dtls/v2/pkg/crypto/elliptic"
-	"github.com/pion/transport/v2/test"
+	"github.com/pion/dtls/v3/pkg/crypto/elliptic"
+	"github.com/pion/dtls/v3/pkg/protocol/handshake"
+	"github.com/pion/ice/v4"
+	"github.com/pion/stun/v3"
+	"github.com/pion/transport/v3/test"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -252,6 +256,14 @@ func TestSetDTLSEllipticCurves(t *testing.T) {
 	}
 }
 
+func TestSetDTLSHandShakeTimeout(*testing.T) {
+	s := SettingEngine{}
+
+	s.SetDTLSConnectContextMaker(func() (context.Context, func()) {
+		return context.WithTimeout(context.Background(), 60*time.Second)
+	})
+}
+
 func TestSetSCTPMaxReceiverBufferSize(t *testing.T) {
 	s := SettingEngine{}
 	assert.Equal(t, uint32(0), s.sctp.maxReceiveBufferSize)
@@ -259,4 +271,72 @@ func TestSetSCTPMaxReceiverBufferSize(t *testing.T) {
 	expSize := uint32(4 * 1024 * 1024)
 	s.SetSCTPMaxReceiveBufferSize(expSize)
 	assert.Equal(t, expSize, s.sctp.maxReceiveBufferSize)
+}
+
+func TestSetSCTPRTOMax(t *testing.T) {
+	s := SettingEngine{}
+	assert.Equal(t, time.Duration(0), s.sctp.rtoMax)
+
+	expSize := time.Second
+	s.SetSCTPRTOMax(expSize)
+	assert.Equal(t, expSize, s.sctp.rtoMax)
+}
+
+func TestSetICEBindingRequestHandler(t *testing.T) {
+	seenICEControlled, seenICEControlledCancel := context.WithCancel(context.Background())
+	seenICEControlling, seenICEControllingCancel := context.WithCancel(context.Background())
+
+	s := SettingEngine{}
+	s.SetICEBindingRequestHandler(func(m *stun.Message, _, _ ice.Candidate, _ *ice.CandidatePair) bool {
+		for _, a := range m.Attributes {
+			switch a.Type {
+			case stun.AttrICEControlled:
+				seenICEControlledCancel()
+			case stun.AttrICEControlling:
+				seenICEControllingCancel()
+			default:
+			}
+		}
+
+		return false
+	})
+
+	pcOffer, pcAnswer, err := NewAPI(WithSettingEngine(s)).newPair(Configuration{})
+	assert.NoError(t, err)
+
+	assert.NoError(t, signalPair(pcOffer, pcAnswer))
+
+	<-seenICEControlled.Done()
+	<-seenICEControlling.Done()
+	closePairNow(t, pcOffer, pcAnswer)
+}
+
+func TestSetHooks(t *testing.T) {
+	s := SettingEngine{}
+
+	if s.dtls.clientHelloMessageHook != nil ||
+		s.dtls.serverHelloMessageHook != nil ||
+		s.dtls.certificateRequestMessageHook != nil {
+		t.Fatalf("SettingEngine defaults aren't as expected.")
+	}
+
+	s.SetDTLSClientHelloMessageHook(func(msg handshake.MessageClientHello) handshake.Message {
+		return &msg
+	})
+	s.SetDTLSServerHelloMessageHook(func(msg handshake.MessageServerHello) handshake.Message {
+		return &msg
+	})
+	s.SetDTLSCertificateRequestMessageHook(func(msg handshake.MessageCertificateRequest) handshake.Message {
+		return &msg
+	})
+
+	if s.dtls.clientHelloMessageHook == nil {
+		t.Errorf("Failed to set DTLS Client Hello Hook")
+	}
+	if s.dtls.serverHelloMessageHook == nil {
+		t.Errorf("Failed to set DTLS Server Hello Hook")
+	}
+	if s.dtls.certificateRequestMessageHook == nil {
+		t.Errorf("Failed to set DTLS Certificate Request Hook")
+	}
 }

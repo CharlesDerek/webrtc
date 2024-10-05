@@ -1,12 +1,11 @@
 # data-channels-detach
-data-channels-detach is an example that shows how you can detach a data channel. This allows direct access the the underlying [pion/datachannel](https://github.com/pion/datachannel). This allows you to interact with the data channel using a more idiomatic API based on the `io.ReadWriteCloser` interface.
+data-channels-detach is an example that shows how you can detach a data channel. This allows direct access the underlying [pion/datachannel](https://github.com/pion/datachannel). This allows you to interact with the data channel using a more idiomatic API based on the `io.ReadWriteCloser` interface.
 
 The example mirrors the data-channels example.
 
 ## Install
 ```
-export GO111MODULE=on
-go get github.com/pion/webrtc/v3/examples/data-channels-detach
+go install github.com/pion/webrtc/v4/examples/data-channels-detach@latest
 ```
 
 ## Usage

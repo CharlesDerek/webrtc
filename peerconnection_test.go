@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/pion/sdp/v3"
-	"github.com/pion/transport/v2/test"
-	"github.com/pion/webrtc/v3/pkg/rtcerr"
+	"github.com/pion/transport/v3/test"
+	"github.com/pion/webrtc/v4/pkg/rtcerr"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -387,11 +387,7 @@ func TestPeerConnection_EventHandlers(t *testing.T) {
 			wg.Done()
 		})
 	})
-	pcOffer.OnConnectionStateChange(func(callbackState PeerConnectionState) {
-		if storedState := pcOffer.ConnectionState(); callbackState != storedState {
-			t.Errorf("State in callback argument is different from ConnectionState(): callbackState=%s, storedState=%s", callbackState, storedState)
-		}
-
+	pcOffer.OnConnectionStateChange(func(PeerConnectionState) {
 		onceOffererOnConnectionStateChange.Do(func() {
 			wasCalledMut.Lock()
 			defer wasCalledMut.Unlock()
@@ -470,7 +466,7 @@ func TestMultipleOfferAnswer(t *testing.T) {
 	if err != nil {
 		t.Errorf("New PeerConnection: got error: %v", err)
 	}
-	secondPeerConn.OnICECandidate(func(i *ICECandidate) {
+	secondPeerConn.OnICECandidate(func(*ICECandidate) {
 	})
 
 	if _, err = secondPeerConn.CreateOffer(nil); err != nil {
@@ -566,7 +562,7 @@ func TestMultipleCreateChannel(t *testing.T) {
 	pcOffer, _ := NewPeerConnection(Configuration{})
 	pcAnswer, _ := NewPeerConnection(Configuration{})
 
-	pcAnswer.OnDataChannel(func(d *DataChannel) {
+	pcAnswer.OnDataChannel(func(*DataChannel) {
 		wg.Done()
 	})
 
@@ -753,4 +749,42 @@ func TestTransportChain(t *testing.T) {
 	assert.NotNil(t, offer.SCTP().Transport().ICETransport())
 
 	closePairNow(t, offer, answer)
+}
+
+// Assert that the PeerConnection closes via DTLS (and not ICE)
+func TestDTLSClose(t *testing.T) {
+	lim := test.TimeOut(time.Second * 10)
+	defer lim.Stop()
+
+	report := test.CheckRoutines(t)
+	defer report()
+
+	pcOffer, pcAnswer, err := newPair()
+	assert.NoError(t, err)
+
+	_, err = pcOffer.AddTransceiverFromKind(RTPCodecTypeVideo)
+	assert.NoError(t, err)
+
+	peerConnectionsConnected := untilConnectionState(PeerConnectionStateConnected, pcOffer, pcAnswer)
+
+	offer, err := pcOffer.CreateOffer(nil)
+	assert.NoError(t, err)
+
+	offerGatheringComplete := GatheringCompletePromise(pcOffer)
+	assert.NoError(t, pcOffer.SetLocalDescription(offer))
+	<-offerGatheringComplete
+
+	assert.NoError(t, pcAnswer.SetRemoteDescription(*pcOffer.LocalDescription()))
+
+	answer, err := pcAnswer.CreateAnswer(nil)
+	assert.NoError(t, err)
+
+	answerGatheringComplete := GatheringCompletePromise(pcAnswer)
+	assert.NoError(t, pcAnswer.SetLocalDescription(answer))
+	<-answerGatheringComplete
+
+	assert.NoError(t, pcOffer.SetRemoteDescription(*pcAnswer.LocalDescription()))
+
+	peerConnectionsConnected.Wait()
+	assert.NoError(t, pcOffer.Close())
 }

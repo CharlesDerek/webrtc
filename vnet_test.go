@@ -10,12 +10,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pion/interceptor"
 	"github.com/pion/logging"
-	"github.com/pion/transport/v2/vnet"
+	"github.com/pion/transport/v3/vnet"
 	"github.com/stretchr/testify/assert"
 )
 
-func createVNetPair(t *testing.T) (*PeerConnection, *PeerConnection, *vnet.Router) {
+func createVNetPair(t *testing.T, interceptorRegistry *interceptor.Registry) (*PeerConnection, *PeerConnection, *vnet.Router) {
 	// Create a root router
 	wan, err := vnet.NewRouter(&vnet.RouterConfig{
 		CIDR:          "1.2.3.0/24",
@@ -33,7 +34,7 @@ func createVNetPair(t *testing.T) (*PeerConnection, *PeerConnection, *vnet.Route
 	assert.NoError(t, wan.AddNet(offerVNet))
 
 	offerSettingEngine := SettingEngine{}
-	offerSettingEngine.SetVNet(offerVNet)
+	offerSettingEngine.SetNet(offerVNet)
 	offerSettingEngine.SetICETimeouts(time.Second, time.Second, time.Millisecond*200)
 
 	// Create a network interface for answerer
@@ -46,20 +47,24 @@ func createVNetPair(t *testing.T) (*PeerConnection, *PeerConnection, *vnet.Route
 	assert.NoError(t, wan.AddNet(answerVNet))
 
 	answerSettingEngine := SettingEngine{}
-	answerSettingEngine.SetVNet(answerVNet)
+	answerSettingEngine.SetNet(answerVNet)
 	answerSettingEngine.SetICETimeouts(time.Second, time.Second, time.Millisecond*200)
 
 	// Start the virtual network by calling Start() on the root router
 	assert.NoError(t, wan.Start())
 
-	offerMediaEngine := &MediaEngine{}
-	assert.NoError(t, offerMediaEngine.RegisterDefaultCodecs())
-	offerPeerConnection, err := NewAPI(WithSettingEngine(offerSettingEngine), WithMediaEngine(offerMediaEngine)).NewPeerConnection(Configuration{})
+	offerOptions := []func(*API){WithSettingEngine(offerSettingEngine)}
+	if interceptorRegistry != nil {
+		offerOptions = append(offerOptions, WithInterceptorRegistry(interceptorRegistry))
+	}
+	offerPeerConnection, err := NewAPI(offerOptions...).NewPeerConnection(Configuration{})
 	assert.NoError(t, err)
 
-	answerMediaEngine := &MediaEngine{}
-	assert.NoError(t, answerMediaEngine.RegisterDefaultCodecs())
-	answerPeerConnection, err := NewAPI(WithSettingEngine(answerSettingEngine), WithMediaEngine(answerMediaEngine)).NewPeerConnection(Configuration{})
+	answerOptions := []func(*API){WithSettingEngine(answerSettingEngine)}
+	if interceptorRegistry != nil {
+		answerOptions = append(answerOptions, WithInterceptorRegistry(interceptorRegistry))
+	}
+	answerPeerConnection, err := NewAPI(answerOptions...).NewPeerConnection(Configuration{})
 	assert.NoError(t, err)
 
 	return offerPeerConnection, answerPeerConnection, wan

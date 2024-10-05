@@ -16,8 +16,8 @@ import (
 	"github.com/pion/interceptor"
 	mock_interceptor "github.com/pion/interceptor/pkg/mock"
 	"github.com/pion/rtp"
-	"github.com/pion/transport/v2/test"
-	"github.com/pion/webrtc/v3/pkg/media"
+	"github.com/pion/transport/v3/test"
+	"github.com/pion/webrtc/v4/pkg/media"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -33,9 +33,6 @@ func TestPeerConnection_Interceptor(t *testing.T) {
 	defer report()
 
 	createPC := func() *PeerConnection {
-		m := &MediaEngine{}
-		assert.NoError(t, m.RegisterDefaultCodecs())
-
 		ir := &interceptor.Registry{}
 		ir.Add(&mock_interceptor.Factory{
 			NewInterceptorFn: func(_ string) (interceptor.Interceptor, error) {
@@ -64,7 +61,7 @@ func TestPeerConnection_Interceptor(t *testing.T) {
 			},
 		})
 
-		pc, err := NewAPI(WithMediaEngine(m), WithInterceptorRegistry(ir)).NewPeerConnection(Configuration{})
+		pc, err := NewAPI(WithInterceptorRegistry(ir)).NewPeerConnection(Configuration{})
 		assert.NoError(t, err)
 
 		return pc
@@ -80,7 +77,7 @@ func TestPeerConnection_Interceptor(t *testing.T) {
 	assert.NoError(t, err)
 
 	seenRTP, seenRTPCancel := context.WithCancel(context.Background())
-	answerer.OnTrack(func(track *TrackRemote, receiver *RTPReceiver) {
+	answerer.OnTrack(func(track *TrackRemote, _ *RTPReceiver) {
 		p, attributes, readErr := track.ReadRTP()
 		assert.NoError(t, readErr)
 
@@ -95,6 +92,7 @@ func TestPeerConnection_Interceptor(t *testing.T) {
 
 	func() {
 		ticker := time.NewTicker(time.Millisecond * 20)
+		defer ticker.Stop()
 		for {
 			select {
 			case <-seenRTP.Done():
@@ -115,9 +113,6 @@ func Test_Interceptor_BindUnbind(t *testing.T) {
 	report := test.CheckRoutines(t)
 	defer report()
 
-	m := &MediaEngine{}
-	assert.NoError(t, m.RegisterDefaultCodecs())
-
 	var (
 		cntBindRTCPReader     uint32
 		cntBindRTCPWriter     uint32
@@ -136,18 +131,18 @@ func Test_Interceptor_BindUnbind(t *testing.T) {
 			atomic.AddUint32(&cntBindRTCPWriter, 1)
 			return writer
 		},
-		BindLocalStreamFn: func(i *interceptor.StreamInfo, writer interceptor.RTPWriter) interceptor.RTPWriter {
+		BindLocalStreamFn: func(_ *interceptor.StreamInfo, writer interceptor.RTPWriter) interceptor.RTPWriter {
 			atomic.AddUint32(&cntBindLocalStream, 1)
 			return writer
 		},
-		UnbindLocalStreamFn: func(i *interceptor.StreamInfo) {
+		UnbindLocalStreamFn: func(*interceptor.StreamInfo) {
 			atomic.AddUint32(&cntUnbindLocalStream, 1)
 		},
-		BindRemoteStreamFn: func(i *interceptor.StreamInfo, reader interceptor.RTPReader) interceptor.RTPReader {
+		BindRemoteStreamFn: func(_ *interceptor.StreamInfo, reader interceptor.RTPReader) interceptor.RTPReader {
 			atomic.AddUint32(&cntBindRemoteStream, 1)
 			return reader
 		},
-		UnbindRemoteStreamFn: func(i *interceptor.StreamInfo) {
+		UnbindRemoteStreamFn: func(_ *interceptor.StreamInfo) {
 			atomic.AddUint32(&cntUnbindRemoteStream, 1)
 		},
 		CloseFn: func() error {
@@ -160,7 +155,7 @@ func Test_Interceptor_BindUnbind(t *testing.T) {
 		NewInterceptorFn: func(_ string) (interceptor.Interceptor, error) { return mockInterceptor, nil },
 	})
 
-	sender, receiver, err := NewAPI(WithMediaEngine(m), WithInterceptorRegistry(ir)).newPair(Configuration{})
+	sender, receiver, err := NewAPI(WithInterceptorRegistry(ir)).newPair(Configuration{})
 	assert.NoError(t, err)
 
 	track, err := NewTrackLocalStaticSample(RTPCodecCapability{MimeType: MimeTypeVP8}, "video", "pion")
@@ -201,10 +196,10 @@ func Test_Interceptor_BindUnbind(t *testing.T) {
 	if cnt := atomic.LoadUint32(&cntUnbindLocalStream); cnt != 1 {
 		t.Errorf("UnbindLocalStreamFn is expected to be called once, but called %d times", cnt)
 	}
-	if cnt := atomic.LoadUint32(&cntBindRemoteStream); cnt != 1 {
+	if cnt := atomic.LoadUint32(&cntBindRemoteStream); cnt != 2 {
 		t.Errorf("BindRemoteStreamFn is expected to be called once, but called %d times", cnt)
 	}
-	if cnt := atomic.LoadUint32(&cntUnbindRemoteStream); cnt != 1 {
+	if cnt := atomic.LoadUint32(&cntUnbindRemoteStream); cnt != 2 {
 		t.Errorf("UnbindRemoteStreamFn is expected to be called once, but called %d times", cnt)
 	}
 
@@ -212,7 +207,7 @@ func Test_Interceptor_BindUnbind(t *testing.T) {
 	if cnt := atomic.LoadUint32(&cntBindRTCPWriter); cnt != 2 {
 		t.Errorf("BindRTCPWriterFn is expected to be called twice, but called %d times", cnt)
 	}
-	if cnt := atomic.LoadUint32(&cntBindRTCPReader); cnt != 2 {
+	if cnt := atomic.LoadUint32(&cntBindRTCPReader); cnt != 3 {
 		t.Errorf("BindRTCPReaderFn is expected to be called twice, but called %d times", cnt)
 	}
 	if cnt := atomic.LoadUint32(&cntClose); cnt != 2 {
@@ -231,12 +226,61 @@ func Test_InterceptorRegistry_Build(t *testing.T) {
 		},
 	})
 
-	peerConnectionA, err := NewAPI(WithInterceptorRegistry(ir)).NewPeerConnection(Configuration{})
-	assert.NoError(t, err)
-
-	peerConnectionB, err := NewAPI(WithInterceptorRegistry(ir)).NewPeerConnection(Configuration{})
+	peerConnectionA, peerConnectionB, err := NewAPI(WithInterceptorRegistry(ir)).newPair(Configuration{})
 	assert.NoError(t, err)
 
 	assert.Equal(t, 2, registryBuildCount)
 	closePairNow(t, peerConnectionA, peerConnectionB)
+}
+
+func Test_Interceptor_ZeroSSRC(t *testing.T) {
+	to := test.TimeOut(time.Second * 20)
+	defer to.Stop()
+
+	report := test.CheckRoutines(t)
+	defer report()
+
+	track, err := NewTrackLocalStaticRTP(RTPCodecCapability{MimeType: MimeTypeVP8}, "video", "pion")
+	assert.NoError(t, err)
+
+	offerer, answerer, err := newPair()
+	assert.NoError(t, err)
+
+	_, err = offerer.AddTrack(track)
+	assert.NoError(t, err)
+
+	probeReceiverCreated := make(chan struct{})
+
+	go func() {
+		sequenceNumber := uint16(0)
+		ticker := time.NewTicker(time.Millisecond * 20)
+		defer ticker.Stop()
+		for range ticker.C {
+			track.mu.Lock()
+			if len(track.bindings) == 1 {
+				_, err = track.bindings[0].writeStream.WriteRTP(&rtp.Header{
+					Version:        2,
+					SSRC:           0,
+					SequenceNumber: sequenceNumber,
+				}, []byte{0, 1, 2, 3, 4, 5})
+				assert.NoError(t, err)
+			}
+			sequenceNumber++
+			track.mu.Unlock()
+
+			if nonMediaBandwidthProbe, ok := answerer.nonMediaBandwidthProbe.Load().(*RTPReceiver); ok {
+				assert.Equal(t, len(nonMediaBandwidthProbe.Tracks()), 1)
+				close(probeReceiverCreated)
+				return
+			}
+		}
+	}()
+
+	assert.NoError(t, signalPair(offerer, answerer))
+
+	peerConnectionConnected := untilConnectionState(PeerConnectionStateConnected, offerer, answerer)
+	peerConnectionConnected.Wait()
+
+	<-probeReceiverCreated
+	closePairNow(t, offerer, answerer)
 }

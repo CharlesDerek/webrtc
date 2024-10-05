@@ -13,9 +13,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/pion/ice/v2"
+	"github.com/pion/ice/v4"
 	"github.com/pion/logging"
-	"github.com/pion/webrtc/v3/internal/mux"
+	"github.com/pion/webrtc/v4/internal/mux"
+	"github.com/pion/webrtc/v4/internal/util"
 )
 
 // ICETransport allows an application access to information about the ICE
@@ -66,7 +67,7 @@ func (t *ICETransport) GetSelectedCandidatePair() (*ICECandidatePair, error) {
 		return nil, err
 	}
 
-	return &ICECandidatePair{Local: &local, Remote: &remote}, nil
+	return NewICECandidatePair(&local, &remote), nil
 }
 
 // NewICETransport creates a new NewICETransport.
@@ -156,6 +157,10 @@ func (t *ICETransport) Start(gatherer *ICEGatherer, params ICEParameters, role *
 		return err
 	}
 
+	if t.State() == ICETransportStateClosed {
+		return errICETransportClosed
+	}
+
 	t.conn = iceConn
 
 	config := mux.Config{
@@ -187,19 +192,43 @@ func (t *ICETransport) restart() error {
 
 // Stop irreversibly stops the ICETransport.
 func (t *ICETransport) Stop() error {
-	t.lock.Lock()
-	defer t.lock.Unlock()
+	return t.stop(false /* shouldGracefullyClose */)
+}
 
+// GracefulStop irreversibly stops the ICETransport. It also waits
+// for any goroutines it started to complete. This is only safe to call outside of
+// ICETransport callbacks or if in a callback, in its own goroutine.
+func (t *ICETransport) GracefulStop() error {
+	return t.stop(true /* shouldGracefullyClose */)
+}
+
+func (t *ICETransport) stop(shouldGracefullyClose bool) error {
+	t.lock.Lock()
 	t.setState(ICETransportStateClosed)
 
 	if t.ctxCancel != nil {
 		t.ctxCancel()
 	}
 
+	// mux and gatherer can only be set when ICETransport.State != Closed.
+	mux := t.mux
+	gatherer := t.gatherer
+	t.lock.Unlock()
+
 	if t.mux != nil {
-		return t.mux.Close()
-	} else if t.gatherer != nil {
-		return t.gatherer.Close()
+		var closeErrs []error
+		if shouldGracefullyClose && gatherer != nil {
+			// we can't access icegatherer/icetransport.Close via
+			// mux's net.Conn Close so we call it earlier here.
+			closeErrs = append(closeErrs, gatherer.GracefulClose())
+		}
+		closeErrs = append(closeErrs, mux.Close())
+		return util.FlattenErrs(closeErrs)
+	} else if gatherer != nil {
+		if shouldGracefullyClose {
+			return gatherer.GracefulClose()
+		}
+		return gatherer.Close()
 	}
 	return nil
 }
@@ -301,6 +330,16 @@ func (t *ICETransport) State() ICETransportState {
 		return v
 	}
 	return ICETransportState(0)
+}
+
+// GetLocalParameters returns an IceParameters object which provides information
+// uniquely identifying the local peer for the duration of the ICE session.
+func (t *ICETransport) GetLocalParameters() (ICEParameters, error) {
+	if err := t.ensureGatherer(); err != nil {
+		return ICEParameters{}, err
+	}
+
+	return t.gatherer.GetLocalParameters()
 }
 
 func (t *ICETransport) setState(i ICETransportState) {

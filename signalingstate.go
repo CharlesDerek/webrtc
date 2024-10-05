@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"sync/atomic"
 
-	"github.com/pion/webrtc/v3/pkg/rtcerr"
+	"github.com/pion/webrtc/v4/pkg/rtcerr"
 )
 
 type stateChangeOp int
@@ -32,10 +32,13 @@ func (op stateChangeOp) String() string {
 type SignalingState int32
 
 const (
+	// SignalingStateUnknown is the enum's zero-value
+	SignalingStateUnknown SignalingState = iota
+
 	// SignalingStateStable indicates there is no offer/answer exchange in
 	// progress. This is also the initial state, in which case the local and
 	// remote descriptions are nil.
-	SignalingStateStable SignalingState = iota + 1
+	SignalingStateStable
 
 	// SignalingStateHaveLocalOffer indicates that a local description, of
 	// type "offer", has been successfully applied.
@@ -84,7 +87,7 @@ func newSignalingState(raw string) SignalingState {
 	case signalingStateClosedStr:
 		return SignalingStateClosed
 	default:
-		return SignalingState(Unknown)
+		return SignalingStateUnknown
 	}
 }
 

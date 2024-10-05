@@ -6,21 +6,24 @@ package webrtc
 import (
 	"fmt"
 
-	"github.com/pion/ice/v2"
+	"github.com/pion/ice/v4"
 )
 
 // ICECandidateType represents the type of the ICE candidate used.
 type ICECandidateType int
 
 const (
+	// ICECandidateTypeUnknown is the enum's zero-value
+	ICECandidateTypeUnknown ICECandidateType = iota
+
 	// ICECandidateTypeHost indicates that the candidate is of Host type as
 	// described in https://tools.ietf.org/html/rfc8445#section-5.1.1.1. A
 	// candidate obtained by binding to a specific port from an IP address on
 	// the host. This includes IP addresses on physical interfaces and logical
 	// ones, such as ones obtained through VPNs.
-	ICECandidateTypeHost ICECandidateType = iota + 1
+	ICECandidateTypeHost
 
-	// ICECandidateTypeSrflx indicates the the candidate is of Server
+	// ICECandidateTypeSrflx indicates the candidate is of Server
 	// Reflexive type as described
 	// https://tools.ietf.org/html/rfc8445#section-5.1.1.2. A candidate type
 	// whose IP address and port are a binding allocated by a NAT for an ICE
@@ -34,7 +37,7 @@ const (
 	// NAT to its peer.
 	ICECandidateTypePrflx
 
-	// ICECandidateTypeRelay indicates the the candidate is of Relay type as
+	// ICECandidateTypeRelay indicates the candidate is of Relay type as
 	// described in https://tools.ietf.org/html/rfc8445#section-5.1.1.2. A
 	// candidate type obtained from a relay server, such as a TURN server.
 	ICECandidateTypeRelay
@@ -60,7 +63,7 @@ func NewICECandidateType(raw string) (ICECandidateType, error) {
 	case iceCandidateTypeRelayStr:
 		return ICECandidateTypeRelay, nil
 	default:
-		return ICECandidateType(Unknown), fmt.Errorf("%w: %s", errICECandidateTypeUnknown, raw)
+		return ICECandidateTypeUnknown, fmt.Errorf("%w: %s", errICECandidateTypeUnknown, raw)
 	}
 }
 
@@ -92,6 +95,18 @@ func getCandidateType(candidateType ice.CandidateType) (ICECandidateType, error)
 	default:
 		// NOTE: this should never happen[tm]
 		err := fmt.Errorf("%w: %s", errICEInvalidConvertCandidateType, candidateType.String())
-		return ICECandidateType(Unknown), err
+		return ICECandidateTypeUnknown, err
 	}
+}
+
+// MarshalText implements the encoding.TextMarshaler interface.
+func (t ICECandidateType) MarshalText() ([]byte, error) {
+	return []byte(t.String()), nil
+}
+
+// UnmarshalText implements the encoding.TextUnmarshaler interface.
+func (t *ICECandidateType) UnmarshalText(b []byte) error {
+	var err error
+	*t, err = NewICECandidateType(string(b))
+	return err
 }

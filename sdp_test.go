@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/pion/sdp/v3"
+	"github.com/pion/transport/v3/test"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -271,6 +272,42 @@ func TestTrackDetailsFromSDP(t *testing.T) {
 		}
 		assert.Equal(t, 0, len(trackDetailsFromSDP(nil, s)))
 	})
+
+	t.Run("ssrc-group after ssrc", func(t *testing.T) {
+		s := &sdp.SessionDescription{
+			MediaDescriptions: []*sdp.MediaDescription{
+				{
+					MediaName: sdp.MediaName{
+						Media: "video",
+					},
+					Attributes: []sdp.Attribute{
+						{Key: "mid", Value: "0"},
+						{Key: "sendrecv"},
+						{Key: "ssrc", Value: "3000 msid:video_trk_label video_trk_guid"},
+						{Key: "ssrc", Value: "4000 msid:rtx_trk_label rtx_trck_guid"},
+						{Key: "ssrc-group", Value: "FID 3000 4000"},
+					},
+				},
+				{
+					MediaName: sdp.MediaName{
+						Media: "video",
+					},
+					Attributes: []sdp.Attribute{
+						{Key: "mid", Value: "1"},
+						{Key: "sendrecv"},
+						{Key: "ssrc-group", Value: "FID 5000 6000"},
+						{Key: "ssrc", Value: "5000 msid:video_trk_label video_trk_guid"},
+						{Key: "ssrc", Value: "6000 msid:rtx_trk_label rtx_trck_guid"},
+					},
+				},
+			},
+		}
+
+		tracks := trackDetailsFromSDP(nil, s)
+		assert.Equal(t, 2, len(tracks))
+		assert.Equal(t, SSRC(4000), *tracks[0].repairSsrc)
+		assert.Equal(t, SSRC(6000), *tracks[1].repairSsrc)
+	})
 }
 
 func TestHaveApplicationMediaSection(t *testing.T) {
@@ -357,7 +394,7 @@ func TestMediaDescriptionFingerprints(t *testing.T) {
 			s, err = populateSDP(s, false,
 				dtlsFingerprints,
 				SDPMediaDescriptionFingerprints,
-				false, true, engine, sdp.ConnectionRoleActive, []ICECandidate{}, ICEParameters{}, media, ICEGatheringStateNew)
+				false, true, engine, sdp.ConnectionRoleActive, []ICECandidate{}, ICEParameters{}, media, ICEGatheringStateNew, nil)
 			assert.NoError(t, err)
 
 			sdparray, err := s.Marshal()
@@ -381,32 +418,41 @@ func TestPopulateSDP(t *testing.T) {
 
 		tr := &RTPTransceiver{kind: RTPCodecTypeVideo, api: api, codecs: me.videoCodecs}
 		tr.setDirection(RTPTransceiverDirectionRecvonly)
-		ridMap := map[string]string{
-			"ridkey": "some",
+		rids := []*simulcastRid{
+			{
+				id:        "ridkey",
+				attrValue: "some",
+			},
+			{
+				id:        "ridPaused",
+				attrValue: "some2",
+				paused:    true,
+			},
 		}
-		mediaSections := []mediaSection{{id: "video", transceivers: []*RTPTransceiver{tr}, ridMap: ridMap}}
+		mediaSections := []mediaSection{{id: "video", transceivers: []*RTPTransceiver{tr}, rids: rids}}
 
 		d := &sdp.SessionDescription{}
 
-		offerSdp, err := populateSDP(d, false, []DTLSFingerprint{}, se.sdpMediaLevelFingerprints, se.candidates.ICELite, true, me, connectionRoleFromDtlsRole(defaultDtlsRoleOffer), []ICECandidate{}, ICEParameters{}, mediaSections, ICEGatheringStateComplete)
+		offerSdp, err := populateSDP(d, false, []DTLSFingerprint{}, se.sdpMediaLevelFingerprints, se.candidates.ICELite, true, me, connectionRoleFromDtlsRole(defaultDtlsRoleOffer), []ICECandidate{}, ICEParameters{}, mediaSections, ICEGatheringStateComplete, nil)
 		assert.Nil(t, err)
 
 		// Test contains rid map keys
-		var found bool
+		var ridFound int
 		for _, desc := range offerSdp.MediaDescriptions {
 			if desc.MediaName.Media != "video" {
 				continue
 			}
-			for _, a := range desc.Attributes {
-				if a.Key == sdpAttributeRid {
-					if strings.Contains(a.Value, "ridkey") {
-						found = true
-						break
-					}
+			ridsInSDP := getRids(desc)
+			for _, rid := range ridsInSDP {
+				if rid.id == "ridkey" && !rid.paused {
+					ridFound++
+				}
+				if rid.id == "ridPaused" && rid.paused {
+					ridFound++
 				}
 			}
 		}
-		assert.Equal(t, true, found, "Rid key should be present")
+		assert.Equal(t, 2, ridFound, "All rid keys should be present")
 	})
 	t.Run("SetCodecPreferences", func(t *testing.T) {
 		se := SettingEngine{}
@@ -431,7 +477,7 @@ func TestPopulateSDP(t *testing.T) {
 
 		d := &sdp.SessionDescription{}
 
-		offerSdp, err := populateSDP(d, false, []DTLSFingerprint{}, se.sdpMediaLevelFingerprints, se.candidates.ICELite, true, me, connectionRoleFromDtlsRole(defaultDtlsRoleOffer), []ICECandidate{}, ICEParameters{}, mediaSections, ICEGatheringStateComplete)
+		offerSdp, err := populateSDP(d, false, []DTLSFingerprint{}, se.sdpMediaLevelFingerprints, se.candidates.ICELite, true, me, connectionRoleFromDtlsRole(defaultDtlsRoleOffer), []ICECandidate{}, ICEParameters{}, mediaSections, ICEGatheringStateComplete, nil)
 		assert.Nil(t, err)
 
 		// Test codecs
@@ -456,7 +502,7 @@ func TestPopulateSDP(t *testing.T) {
 		se := SettingEngine{}
 		se.SetLite(true)
 
-		offerSdp, err := populateSDP(&sdp.SessionDescription{}, false, []DTLSFingerprint{}, se.sdpMediaLevelFingerprints, se.candidates.ICELite, true, &MediaEngine{}, connectionRoleFromDtlsRole(defaultDtlsRoleOffer), []ICECandidate{}, ICEParameters{}, []mediaSection{}, ICEGatheringStateComplete)
+		offerSdp, err := populateSDP(&sdp.SessionDescription{}, false, []DTLSFingerprint{}, se.sdpMediaLevelFingerprints, se.candidates.ICELite, true, &MediaEngine{}, connectionRoleFromDtlsRole(defaultDtlsRoleOffer), []ICECandidate{}, ICEParameters{}, []mediaSection{}, ICEGatheringStateComplete, nil)
 		assert.Nil(t, err)
 
 		var found bool
@@ -489,7 +535,7 @@ func TestPopulateSDP(t *testing.T) {
 
 		d := &sdp.SessionDescription{}
 
-		offerSdp, err := populateSDP(d, false, []DTLSFingerprint{}, se.sdpMediaLevelFingerprints, se.candidates.ICELite, true, me, connectionRoleFromDtlsRole(defaultDtlsRoleOffer), []ICECandidate{}, ICEParameters{}, mediaSections, ICEGatheringStateComplete)
+		offerSdp, err := populateSDP(d, false, []DTLSFingerprint{}, se.sdpMediaLevelFingerprints, se.candidates.ICELite, true, me, connectionRoleFromDtlsRole(defaultDtlsRoleOffer), []ICECandidate{}, ICEParameters{}, mediaSections, ICEGatheringStateComplete, nil)
 		assert.NoError(t, err)
 
 		// Test codecs
@@ -507,7 +553,7 @@ func TestPopulateSDP(t *testing.T) {
 	})
 	t.Run("allow mixed extmap", func(t *testing.T) {
 		se := SettingEngine{}
-		offerSdp, err := populateSDP(&sdp.SessionDescription{}, false, []DTLSFingerprint{}, se.sdpMediaLevelFingerprints, se.candidates.ICELite, true, &MediaEngine{}, connectionRoleFromDtlsRole(defaultDtlsRoleOffer), []ICECandidate{}, ICEParameters{}, []mediaSection{}, ICEGatheringStateComplete)
+		offerSdp, err := populateSDP(&sdp.SessionDescription{}, false, []DTLSFingerprint{}, se.sdpMediaLevelFingerprints, se.candidates.ICELite, true, &MediaEngine{}, connectionRoleFromDtlsRole(defaultDtlsRoleOffer), []ICECandidate{}, ICEParameters{}, []mediaSection{}, ICEGatheringStateComplete, nil)
 		assert.Nil(t, err)
 
 		var found bool
@@ -522,7 +568,7 @@ func TestPopulateSDP(t *testing.T) {
 		}
 		assert.Equal(t, true, found, "AllowMixedExtMap key should be present")
 
-		offerSdp, err = populateSDP(&sdp.SessionDescription{}, false, []DTLSFingerprint{}, se.sdpMediaLevelFingerprints, se.candidates.ICELite, false, &MediaEngine{}, connectionRoleFromDtlsRole(defaultDtlsRoleOffer), []ICECandidate{}, ICEParameters{}, []mediaSection{}, ICEGatheringStateComplete)
+		offerSdp, err = populateSDP(&sdp.SessionDescription{}, false, []DTLSFingerprint{}, se.sdpMediaLevelFingerprints, se.candidates.ICELite, false, &MediaEngine{}, connectionRoleFromDtlsRole(defaultDtlsRoleOffer), []ICECandidate{}, ICEParameters{}, []mediaSection{}, ICEGatheringStateComplete, nil)
 		assert.Nil(t, err)
 
 		found = false
@@ -536,6 +582,77 @@ func TestPopulateSDP(t *testing.T) {
 			}
 		}
 		assert.Equal(t, false, found, "AllowMixedExtMap key should not be present")
+	})
+	t.Run("bundle all", func(t *testing.T) {
+		se := SettingEngine{}
+
+		me := &MediaEngine{}
+		assert.NoError(t, me.RegisterDefaultCodecs())
+		api := NewAPI(WithMediaEngine(me))
+
+		tr := &RTPTransceiver{kind: RTPCodecTypeVideo, api: api, codecs: me.videoCodecs}
+		tr.setDirection(RTPTransceiverDirectionRecvonly)
+		mediaSections := []mediaSection{{id: "video", transceivers: []*RTPTransceiver{tr}}}
+
+		d := &sdp.SessionDescription{}
+
+		offerSdp, err := populateSDP(d, false, []DTLSFingerprint{}, se.sdpMediaLevelFingerprints, se.candidates.ICELite, true, me, connectionRoleFromDtlsRole(defaultDtlsRoleOffer), []ICECandidate{}, ICEParameters{}, mediaSections, ICEGatheringStateComplete, nil)
+		assert.Nil(t, err)
+
+		bundle, ok := offerSdp.Attribute(sdp.AttrKeyGroup)
+		assert.True(t, ok)
+		assert.Equal(t, "BUNDLE video", bundle)
+	})
+	t.Run("bundle matched", func(t *testing.T) {
+		se := SettingEngine{}
+
+		me := &MediaEngine{}
+		assert.NoError(t, me.RegisterDefaultCodecs())
+		api := NewAPI(WithMediaEngine(me))
+
+		tra := &RTPTransceiver{kind: RTPCodecTypeVideo, api: api, codecs: me.videoCodecs}
+		tra.setDirection(RTPTransceiverDirectionRecvonly)
+		mediaSections := []mediaSection{{id: "video", transceivers: []*RTPTransceiver{tra}}}
+
+		trv := &RTPTransceiver{kind: RTPCodecTypeAudio, api: api, codecs: me.audioCodecs}
+		trv.setDirection(RTPTransceiverDirectionRecvonly)
+		mediaSections = append(mediaSections, mediaSection{id: "audio", transceivers: []*RTPTransceiver{trv}})
+
+		d := &sdp.SessionDescription{}
+
+		matchedBundle := "audio"
+		offerSdp, err := populateSDP(d, false, []DTLSFingerprint{}, se.sdpMediaLevelFingerprints, se.candidates.ICELite, true, me, connectionRoleFromDtlsRole(defaultDtlsRoleOffer), []ICECandidate{}, ICEParameters{}, mediaSections, ICEGatheringStateComplete, &matchedBundle)
+		assert.Nil(t, err)
+
+		bundle, ok := offerSdp.Attribute(sdp.AttrKeyGroup)
+		assert.True(t, ok)
+		assert.Equal(t, "BUNDLE audio", bundle)
+
+		mediaVideo := offerSdp.MediaDescriptions[0]
+		mid, ok := mediaVideo.Attribute(sdp.AttrKeyMID)
+		assert.True(t, ok)
+		assert.Equal(t, "video", mid)
+		assert.True(t, mediaVideo.MediaName.Port.Value == 0)
+	})
+	t.Run("empty bundle group", func(t *testing.T) {
+		se := SettingEngine{}
+
+		me := &MediaEngine{}
+		assert.NoError(t, me.RegisterDefaultCodecs())
+		api := NewAPI(WithMediaEngine(me))
+
+		tra := &RTPTransceiver{kind: RTPCodecTypeVideo, api: api, codecs: me.videoCodecs}
+		tra.setDirection(RTPTransceiverDirectionRecvonly)
+		mediaSections := []mediaSection{{id: "video", transceivers: []*RTPTransceiver{tra}}}
+
+		d := &sdp.SessionDescription{}
+
+		matchedBundle := ""
+		offerSdp, err := populateSDP(d, false, []DTLSFingerprint{}, se.sdpMediaLevelFingerprints, se.candidates.ICELite, true, me, connectionRoleFromDtlsRole(defaultDtlsRoleOffer), []ICECandidate{}, ICEParameters{}, mediaSections, ICEGatheringStateComplete, &matchedBundle)
+		assert.Nil(t, err)
+
+		_, ok := offerSdp.Attribute(sdp.AttrKeyGroup)
+		assert.False(t, ok)
 	})
 }
 
@@ -555,7 +672,14 @@ func TestGetRIDs(t *testing.T) {
 	rids := getRids(m[0])
 
 	assert.NotEmpty(t, rids, "Rid mapping should be present")
-	if _, ok := rids["f"]; !ok {
+	found := false
+	for _, rid := range rids {
+		if rid.id == "f" {
+			found = true
+			break
+		}
+	}
+	if !found {
 		assert.Fail(t, "rid values should contain 'f'")
 	}
 }
@@ -592,12 +716,14 @@ func TestCodecsFromMediaDescription(t *testing.T) {
 				{Key: "fmtp", Value: "111 minptime=10;useinbandfec=1"},
 				{Key: "rtcp-fb", Value: "111 goog-remb"},
 				{Key: "rtcp-fb", Value: "111 ccm fir"},
+				{Key: "rtcp-fb", Value: "* ccm fir"},
+				{Key: "rtcp-fb", Value: "* nack"},
 			},
 		})
 
 		assert.Equal(t, codecs, []RTPCodecParameters{
 			{
-				RTPCodecCapability: RTPCodecCapability{MimeTypeOpus, 48000, 2, "minptime=10;useinbandfec=1", []RTCPFeedback{{"goog-remb", ""}, {"ccm", "fir"}}},
+				RTPCodecCapability: RTPCodecCapability{MimeTypeOpus, 48000, 2, "minptime=10;useinbandfec=1", []RTCPFeedback{{"goog-remb", ""}, {"ccm", "fir"}, {"nack", ""}}},
 				PayloadType:        111,
 			},
 		})
@@ -620,4 +746,167 @@ func TestRtpExtensionsFromMediaDescription(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, extensions[sdp.ABSSendTimeURI], 1)
 	assert.Equal(t, extensions[sdp.SDESMidURI], 3)
+}
+
+// Assert that FEC and RTX SSRCes are present if they are enabled in the MediaEngine
+func Test_SSRC_Groups(t *testing.T) {
+	const offerWithRTX = `v=0
+o=- 930222930247584370 1727933945 IN IP4 0.0.0.0
+s=-
+t=0 0
+a=msid-semantic:WMS*
+a=fingerprint:sha-256 11:3F:1C:8D:D4:1D:8D:E7:E1:3E:AF:38:06:0D:1D:40:22:DC:FE:C9:93:E4:80:D8:0B:17:9F:2E:C1:CA:C8:3D
+a=extmap-allow-mixed
+a=group:BUNDLE 0 1
+m=audio 9 UDP/TLS/RTP/SAVPF 101
+c=IN IP4 0.0.0.0
+a=setup:actpass
+a=mid:0
+a=ice-ufrag:yIgpPUMarFReduuM
+a=ice-pwd:VmnVaqCByWiOTatFoDBbMGhSFGlsxviz
+a=rtcp-mux
+a=rtcp-rsize
+a=rtpmap:101 opus/90000
+a=rtcp-fb:101 transport-cc
+a=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01
+a=ssrc:3566446228 cname:stream-id
+a=ssrc:3566446228 msid:stream-id audio-id
+a=ssrc:3566446228 mslabel:stream-id
+a=ssrc:3566446228 label:audio-id
+a=msid:stream-id audio-id
+a=sendrecv
+m=video 9 UDP/TLS/RTP/SAVPF 96 97
+c=IN IP4 0.0.0.0
+a=setup:actpass
+a=mid:1
+a=ice-ufrag:yIgpPUMarFReduuM
+a=ice-pwd:VmnVaqCByWiOTatFoDBbMGhSFGlsxviz
+a=rtpmap:96 VP8/90000
+a=rtcp-fb:96 nack
+a=rtcp-fb:96 nack pli
+a=rtcp-fb:96 transport-cc
+a=rtpmap:97 rtx/90000
+a=fmtp:97 apt=96
+a=ssrc-group:FID 1701050765 2578535262
+a=ssrc:1701050765 cname:stream-id
+a=ssrc:1701050765 msid:stream-id track-id
+a=ssrc:1701050765 mslabel:stream-id
+a=ssrc:1701050765 label:track-id
+a=msid:stream-id track-id
+a=sendrecv
+`
+
+	const offerNoRTX = `v=0
+o=- 930222930247584370 1727933945 IN IP4 0.0.0.0
+s=-
+t=0 0
+a=msid-semantic:WMS*
+a=fingerprint:sha-256 11:3F:1C:8D:D4:1D:8D:E7:E1:3E:AF:38:06:0D:1D:40:22:DC:FE:C9:93:E4:80:D8:0B:17:9F:2E:C1:CA:C8:3D
+a=extmap-allow-mixed
+a=group:BUNDLE 0 1
+m=audio 9 UDP/TLS/RTP/SAVPF 101
+a=mid:0
+a=ice-ufrag:yIgpPUMarFReduuM
+a=ice-pwd:VmnVaqCByWiOTatFoDBbMGhSFGlsxviz
+a=rtcp-mux
+a=rtcp-rsize
+a=rtpmap:101 opus/90000
+a=rtcp-fb:101 transport-cc
+a=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01
+a=ssrc:3566446228 cname:stream-id
+a=ssrc:3566446228 msid:stream-id audio-id
+a=ssrc:3566446228 mslabel:stream-id
+a=ssrc:3566446228 label:audio-id
+a=msid:stream-id audio-id
+a=sendrecv
+m=video 9 UDP/TLS/RTP/SAVPF 96
+c=IN IP4 0.0.0.0
+a=setup:actpass
+a=mid:1
+a=ice-ufrag:yIgpPUMarFReduuM
+a=ice-pwd:VmnVaqCByWiOTatFoDBbMGhSFGlsxviz
+a=rtpmap:96 VP8/90000
+a=rtcp-fb:96 nack
+a=rtcp-fb:96 nack pli
+a=rtcp-fb:96 transport-cc
+a=ssrc-group:FID 1701050765 2578535262
+a=ssrc:1701050765 cname:stream-id
+a=ssrc:1701050765 msid:stream-id track-id
+a=ssrc:1701050765 mslabel:stream-id
+a=ssrc:1701050765 label:track-id
+a=msid:stream-id track-id
+a=sendrecv
+`
+	defer test.CheckRoutines(t)()
+
+	for _, testCase := range []struct {
+		name                   string
+		enableRTXInMediaEngine bool
+		rtxExpected            bool
+		remoteOffer            string
+	}{
+		{"Offer", true, true, ""},
+		{"Offer no Local Groups", false, false, ""},
+		{"Answer", true, true, offerWithRTX},
+		{"Answer No Local Groups", false, false, offerWithRTX},
+		{"Answer No Remote Groups", true, false, offerNoRTX},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			checkRTXSupport := func(s *sdp.SessionDescription) {
+				// RTX is never enabled for audio
+				assert.Nil(t, trackDetailsFromSDP(nil, s)[0].repairSsrc)
+
+				// RTX is conditionally enabled for video
+				if testCase.rtxExpected {
+					assert.NotNil(t, trackDetailsFromSDP(nil, s)[1].repairSsrc)
+				} else {
+					assert.Nil(t, trackDetailsFromSDP(nil, s)[1].repairSsrc)
+				}
+			}
+
+			m := &MediaEngine{}
+			assert.NoError(t, m.RegisterCodec(RTPCodecParameters{
+				RTPCodecCapability: RTPCodecCapability{MimeType: MimeTypeOpus, ClockRate: 90000, Channels: 0, SDPFmtpLine: "", RTCPFeedback: nil},
+				PayloadType:        101,
+			}, RTPCodecTypeAudio))
+			assert.NoError(t, m.RegisterCodec(RTPCodecParameters{
+				RTPCodecCapability: RTPCodecCapability{MimeType: MimeTypeVP8, ClockRate: 90000, Channels: 0, SDPFmtpLine: "", RTCPFeedback: nil},
+				PayloadType:        96,
+			}, RTPCodecTypeVideo))
+			if testCase.enableRTXInMediaEngine {
+				assert.NoError(t, m.RegisterCodec(RTPCodecParameters{
+					RTPCodecCapability: RTPCodecCapability{MimeType: MimeTypeRTX, ClockRate: 90000, Channels: 0, SDPFmtpLine: "apt=96", RTCPFeedback: nil},
+					PayloadType:        97,
+				}, RTPCodecTypeVideo))
+			}
+
+			peerConnection, err := NewAPI(WithMediaEngine(m)).NewPeerConnection(Configuration{})
+			assert.NoError(t, err)
+
+			audioTrack, err := NewTrackLocalStaticSample(RTPCodecCapability{MimeType: MimeTypeOpus}, "audio-id", "stream-id")
+			assert.NoError(t, err)
+
+			_, err = peerConnection.AddTrack(audioTrack)
+			assert.NoError(t, err)
+
+			videoTrack, err := NewTrackLocalStaticSample(RTPCodecCapability{MimeType: MimeTypeVP8}, "video-id", "stream-id")
+			assert.NoError(t, err)
+
+			_, err = peerConnection.AddTrack(videoTrack)
+			assert.NoError(t, err)
+
+			if testCase.remoteOffer == "" {
+				offer, err := peerConnection.CreateOffer(nil)
+				assert.NoError(t, err)
+				checkRTXSupport(offer.parsed)
+			} else {
+				assert.NoError(t, peerConnection.SetRemoteDescription(SessionDescription{Type: SDPTypeOffer, SDP: testCase.remoteOffer}))
+				answer, err := peerConnection.CreateAnswer(nil)
+				assert.NoError(t, err)
+				checkRTXSupport(answer.parsed)
+			}
+
+			assert.NoError(t, peerConnection.Close())
+		})
+	}
 }

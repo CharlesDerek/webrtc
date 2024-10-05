@@ -12,6 +12,7 @@ import (
 	"github.com/pion/interceptor"
 	"github.com/pion/interceptor/pkg/nack"
 	"github.com/pion/interceptor/pkg/report"
+	"github.com/pion/interceptor/pkg/rfc8888"
 	"github.com/pion/interceptor/pkg/twcc"
 	"github.com/pion/rtp"
 	"github.com/pion/sdp/v3"
@@ -26,6 +27,10 @@ func RegisterDefaultInterceptors(mediaEngine *MediaEngine, interceptorRegistry *
 	}
 
 	if err := ConfigureRTCPReports(interceptorRegistry); err != nil {
+		return err
+	}
+
+	if err := ConfigureSimulcastExtensionHeaders(mediaEngine); err != nil {
 		return err
 	}
 
@@ -109,6 +114,32 @@ func ConfigureTWCCSender(mediaEngine *MediaEngine, interceptorRegistry *intercep
 	return nil
 }
 
+// ConfigureCongestionControlFeedback registers congestion control feedback as
+// defined in RFC 8888 (https://datatracker.ietf.org/doc/rfc8888/)
+func ConfigureCongestionControlFeedback(mediaEngine *MediaEngine, interceptorRegistry *interceptor.Registry) error {
+	mediaEngine.RegisterFeedback(RTCPFeedback{Type: TypeRTCPFBACK, Parameter: "ccfb"}, RTPCodecTypeVideo)
+	mediaEngine.RegisterFeedback(RTCPFeedback{Type: TypeRTCPFBACK, Parameter: "ccfb"}, RTPCodecTypeAudio)
+	generator, err := rfc8888.NewSenderInterceptor()
+	if err != nil {
+		return err
+	}
+	interceptorRegistry.Add(generator)
+	return nil
+}
+
+// ConfigureSimulcastExtensionHeaders enables the RTP Extension Headers needed for Simulcast
+func ConfigureSimulcastExtensionHeaders(mediaEngine *MediaEngine) error {
+	if err := mediaEngine.RegisterHeaderExtension(RTPHeaderExtensionCapability{URI: sdp.SDESMidURI}, RTPCodecTypeVideo); err != nil {
+		return err
+	}
+
+	if err := mediaEngine.RegisterHeaderExtension(RTPHeaderExtensionCapability{URI: sdp.SDESRTPStreamIDURI}, RTPCodecTypeVideo); err != nil {
+		return err
+	}
+
+	return mediaEngine.RegisterHeaderExtension(RTPHeaderExtensionCapability{URI: sdesRepairRTPStreamIDURI}, RTPCodecTypeVideo)
+}
+
 type interceptorToTrackLocalWriter struct{ interceptor atomic.Value } // interceptor.RTPWriter }
 
 func (i *interceptorToTrackLocalWriter) WriteRTP(header *rtp.Header, payload []byte) (int, error) {
@@ -128,7 +159,8 @@ func (i *interceptorToTrackLocalWriter) Write(b []byte) (int, error) {
 	return i.WriteRTP(&packet.Header, packet.Payload)
 }
 
-func createStreamInfo(id string, ssrc SSRC, payloadType PayloadType, codec RTPCodecCapability, webrtcHeaderExtensions []RTPHeaderExtensionParameter) *interceptor.StreamInfo {
+// nolint: unparam
+func createStreamInfo(id string, ssrc, ssrcRTX, ssrcFEC SSRC, payloadType, payloadTypeRTX, payloadTypeFEC PayloadType, codec RTPCodecCapability, webrtcHeaderExtensions []RTPHeaderExtensionParameter) *interceptor.StreamInfo {
 	headerExtensions := make([]interceptor.RTPHeaderExtension, 0, len(webrtcHeaderExtensions))
 	for _, h := range webrtcHeaderExtensions {
 		headerExtensions = append(headerExtensions, interceptor.RTPHeaderExtension{ID: h.ID, URI: h.URI})
@@ -140,15 +172,19 @@ func createStreamInfo(id string, ssrc SSRC, payloadType PayloadType, codec RTPCo
 	}
 
 	return &interceptor.StreamInfo{
-		ID:                  id,
-		Attributes:          interceptor.Attributes{},
-		SSRC:                uint32(ssrc),
-		PayloadType:         uint8(payloadType),
-		RTPHeaderExtensions: headerExtensions,
-		MimeType:            codec.MimeType,
-		ClockRate:           codec.ClockRate,
-		Channels:            codec.Channels,
-		SDPFmtpLine:         codec.SDPFmtpLine,
-		RTCPFeedback:        feedbacks,
+		ID:                                id,
+		Attributes:                        interceptor.Attributes{},
+		SSRC:                              uint32(ssrc),
+		SSRCRetransmission:                uint32(ssrcRTX),
+		SSRCForwardErrorCorrection:        uint32(ssrcFEC),
+		PayloadType:                       uint8(payloadType),
+		PayloadTypeRetransmission:         uint8(payloadTypeRTX),
+		PayloadTypeForwardErrorCorrection: uint8(payloadTypeFEC),
+		RTPHeaderExtensions:               headerExtensions,
+		MimeType:                          codec.MimeType,
+		ClockRate:                         codec.ClockRate,
+		Channels:                          codec.Channels,
+		SDPFmtpLine:                       codec.SDPFmtpLine,
+		RTCPFeedback:                      feedbacks,
 	}
 }

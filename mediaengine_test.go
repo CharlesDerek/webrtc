@@ -13,7 +13,7 @@ import (
 	"testing"
 
 	"github.com/pion/sdp/v3"
-	"github.com/pion/transport/v2/test"
+	"github.com/pion/transport/v3/test"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -195,7 +195,40 @@ a=rtpmap:111 opus/48000/2
 
 		m := MediaEngine{}
 		assert.NoError(t, m.RegisterDefaultCodecs())
-		registerSimulcastHeaderExtensions(&m, RTPCodecTypeAudio)
+		assert.NoError(t, m.RegisterHeaderExtension(RTPHeaderExtensionCapability{URI: sdp.SDESMidURI}, RTPCodecTypeAudio))
+		assert.NoError(t, m.updateFromRemoteDescription(mustParse(headerExtensions)))
+
+		assert.False(t, m.negotiatedVideo)
+		assert.True(t, m.negotiatedAudio)
+
+		absID, absAudioEnabled, absVideoEnabled := m.getHeaderExtensionID(RTPHeaderExtensionCapability{sdp.ABSSendTimeURI})
+		assert.Equal(t, absID, 0)
+		assert.False(t, absAudioEnabled)
+		assert.False(t, absVideoEnabled)
+
+		midID, midAudioEnabled, midVideoEnabled := m.getHeaderExtensionID(RTPHeaderExtensionCapability{sdp.SDESMidURI})
+		assert.Equal(t, midID, 7)
+		assert.True(t, midAudioEnabled)
+		assert.False(t, midVideoEnabled)
+	})
+
+	t.Run("Different Header Extensions on same codec", func(t *testing.T) {
+		const headerExtensions = `v=0
+o=- 4596489990601351948 2 IN IP4 127.0.0.1
+s=-
+t=0 0
+m=audio 9 UDP/TLS/RTP/SAVPF 111
+a=rtpmap:111 opus/48000/2
+m=audio 9 UDP/TLS/RTP/SAVPF 111
+a=extmap:7 urn:ietf:params:rtp-hdrext:sdes:mid
+a=extmap:5 urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id
+a=rtpmap:111 opus/48000/2
+`
+
+		m := MediaEngine{}
+		assert.NoError(t, m.RegisterDefaultCodecs())
+		assert.NoError(t, m.RegisterHeaderExtension(RTPHeaderExtensionCapability{URI: "urn:ietf:params:rtp-hdrext:sdes:mid"}, RTPCodecTypeAudio))
+		assert.NoError(t, m.RegisterHeaderExtension(RTPHeaderExtensionCapability{URI: "urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id"}, RTPCodecTypeAudio))
 		assert.NoError(t, m.updateFromRemoteDescription(mustParse(headerExtensions)))
 
 		assert.False(t, m.negotiatedVideo)
@@ -308,8 +341,18 @@ a=rtpmap:96 VP8/90000
 o=- 4596489990601351948 2 IN IP4 127.0.0.1
 s=-
 t=0 0
-m=video 60323 UDP/TLS/RTP/SAVPF 94 96 97
+m=video 60323 UDP/TLS/RTP/SAVPF 94 95 106 107 108 109 96 97
 a=rtpmap:94 VP8/90000
+a=rtpmap:95 rtx/90000
+a=fmtp:95 apt=94
+a=rtpmap:106 H264/90000
+a=fmtp:106 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42001f
+a=rtpmap:107 rtx/90000
+a=fmtp:107 apt=106
+a=rtpmap:108 H264/90000
+a=fmtp:108 level-asymmetry-allowed=1;packetization-mode=0;profile-level-id=42001f
+a=rtpmap:109 rtx/90000
+a=fmtp:109 apt=108
 a=rtpmap:96 VP9/90000
 a=fmtp:96 profile-id=2
 a=rtpmap:97 rtx/90000
@@ -318,22 +361,64 @@ a=fmtp:97 apt=96
 		m := MediaEngine{}
 		assert.NoError(t, m.RegisterCodec(RTPCodecParameters{
 			RTPCodecCapability: RTPCodecCapability{MimeTypeVP8, 90000, 0, "", nil},
-			PayloadType:        94,
-		}, RTPCodecTypeVideo))
-		assert.NoError(t, m.RegisterCodec(RTPCodecParameters{
-			RTPCodecCapability: RTPCodecCapability{MimeTypeVP9, 90000, 0, "profile-id=2", nil},
 			PayloadType:        96,
 		}, RTPCodecTypeVideo))
 		assert.NoError(t, m.RegisterCodec(RTPCodecParameters{
-			RTPCodecCapability: RTPCodecCapability{"video/rtx", 90000, 0, "apt=96", nil},
+			RTPCodecCapability: RTPCodecCapability{MimeTypeRTX, 90000, 0, "apt=96", nil},
 			PayloadType:        97,
+		}, RTPCodecTypeVideo))
+		assert.NoError(t, m.RegisterCodec(RTPCodecParameters{
+			RTPCodecCapability: RTPCodecCapability{MimeTypeH264, 90000, 0, "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42001f", nil},
+			PayloadType:        102,
+		}, RTPCodecTypeVideo))
+		assert.NoError(t, m.RegisterCodec(RTPCodecParameters{
+			RTPCodecCapability: RTPCodecCapability{MimeTypeRTX, 90000, 0, "apt=102", nil},
+			PayloadType:        103,
+		}, RTPCodecTypeVideo))
+		assert.NoError(t, m.RegisterCodec(RTPCodecParameters{
+			RTPCodecCapability: RTPCodecCapability{MimeTypeH264, 90000, 0, "level-asymmetry-allowed=1;packetization-mode=0;profile-level-id=42001f", nil},
+			PayloadType:        104,
+		}, RTPCodecTypeVideo))
+		assert.NoError(t, m.RegisterCodec(RTPCodecParameters{
+			RTPCodecCapability: RTPCodecCapability{MimeTypeRTX, 90000, 0, "apt=104", nil},
+			PayloadType:        105,
+		}, RTPCodecTypeVideo))
+		assert.NoError(t, m.RegisterCodec(RTPCodecParameters{
+			RTPCodecCapability: RTPCodecCapability{MimeTypeVP9, 90000, 0, "profile-id=2", nil},
+			PayloadType:        98,
+		}, RTPCodecTypeVideo))
+		assert.NoError(t, m.RegisterCodec(RTPCodecParameters{
+			RTPCodecCapability: RTPCodecCapability{MimeTypeRTX, 90000, 0, "apt=98", nil},
+			PayloadType:        99,
 		}, RTPCodecTypeVideo))
 		assert.NoError(t, m.updateFromRemoteDescription(mustParse(profileLevels)))
 
 		assert.True(t, m.negotiatedVideo)
 
-		_, _, err := m.getCodecByPayload(97)
+		vp9Codec, _, err := m.getCodecByPayload(96)
 		assert.NoError(t, err)
+		assert.Equal(t, vp9Codec.MimeType, MimeTypeVP9)
+		vp9RTX, _, err := m.getCodecByPayload(97)
+		assert.NoError(t, err)
+		assert.Equal(t, vp9RTX.MimeType, MimeTypeRTX)
+
+		h264P1Codec, _, err := m.getCodecByPayload(106)
+		assert.NoError(t, err)
+		assert.Equal(t, h264P1Codec.MimeType, MimeTypeH264)
+		assert.Equal(t, h264P1Codec.SDPFmtpLine, "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42001f")
+		h264P1RTX, _, err := m.getCodecByPayload(107)
+		assert.NoError(t, err)
+		assert.Equal(t, h264P1RTX.MimeType, MimeTypeRTX)
+		assert.Equal(t, h264P1RTX.SDPFmtpLine, "apt=106")
+
+		h264P0Codec, _, err := m.getCodecByPayload(108)
+		assert.NoError(t, err)
+		assert.Equal(t, h264P0Codec.MimeType, MimeTypeH264)
+		assert.Equal(t, h264P0Codec.SDPFmtpLine, "level-asymmetry-allowed=1;packetization-mode=0;profile-level-id=42001f")
+		h264P0RTX, _, err := m.getCodecByPayload(109)
+		assert.NoError(t, err)
+		assert.Equal(t, h264P0RTX.MimeType, MimeTypeRTX)
+		assert.Equal(t, h264P0RTX.SDPFmtpLine, "apt=108")
 	})
 
 	t.Run("Matches when rtx apt for partial match codec", func(t *testing.T) {
@@ -358,7 +443,7 @@ a=fmtp:97 apt=96
 			PayloadType:        96,
 		}, RTPCodecTypeVideo))
 		assert.NoError(t, m.RegisterCodec(RTPCodecParameters{
-			RTPCodecCapability: RTPCodecCapability{"video/rtx", 90000, 0, "apt=96", nil},
+			RTPCodecCapability: RTPCodecCapability{MimeTypeRTX, 90000, 0, "apt=96", nil},
 			PayloadType:        97,
 		}, RTPCodecTypeVideo))
 		assert.NoError(t, m.updateFromRemoteDescription(mustParse(profileLevels)))

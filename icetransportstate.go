@@ -3,15 +3,18 @@
 
 package webrtc
 
-import "github.com/pion/ice/v2"
+import "github.com/pion/ice/v4"
 
 // ICETransportState represents the current state of the ICE transport.
 type ICETransportState int
 
 const (
+	// ICETransportStateUnknown is the enum's zero-value
+	ICETransportStateUnknown ICETransportState = iota
+
 	// ICETransportStateNew indicates the ICETransport is waiting
 	// for remote candidates to be supplied.
-	ICETransportStateNew = iota + 1
+	ICETransportStateNew
 
 	// ICETransportStateChecking indicates the ICETransport has
 	// received at least one remote candidate, and a local and remote
@@ -46,24 +49,55 @@ const (
 	ICETransportStateClosed
 )
 
+const (
+	iceTransportStateNewStr          = "new"
+	iceTransportStateCheckingStr     = "checking"
+	iceTransportStateConnectedStr    = "connected"
+	iceTransportStateCompletedStr    = "completed"
+	iceTransportStateFailedStr       = "failed"
+	iceTransportStateDisconnectedStr = "disconnected"
+	iceTransportStateClosedStr       = "closed"
+)
+
+func newICETransportState(raw string) ICETransportState {
+	switch raw {
+	case iceTransportStateNewStr:
+		return ICETransportStateNew
+	case iceTransportStateCheckingStr:
+		return ICETransportStateChecking
+	case iceTransportStateConnectedStr:
+		return ICETransportStateConnected
+	case iceTransportStateCompletedStr:
+		return ICETransportStateCompleted
+	case iceTransportStateFailedStr:
+		return ICETransportStateFailed
+	case iceTransportStateDisconnectedStr:
+		return ICETransportStateDisconnected
+	case iceTransportStateClosedStr:
+		return ICETransportStateClosed
+	default:
+		return ICETransportStateUnknown
+	}
+}
+
 func (c ICETransportState) String() string {
 	switch c {
 	case ICETransportStateNew:
-		return "new"
+		return iceTransportStateNewStr
 	case ICETransportStateChecking:
-		return "checking"
+		return iceTransportStateCheckingStr
 	case ICETransportStateConnected:
-		return "connected"
+		return iceTransportStateConnectedStr
 	case ICETransportStateCompleted:
-		return "completed"
+		return iceTransportStateCompletedStr
 	case ICETransportStateFailed:
-		return "failed"
+		return iceTransportStateFailedStr
 	case ICETransportStateDisconnected:
-		return "disconnected"
+		return iceTransportStateDisconnectedStr
 	case ICETransportStateClosed:
-		return "closed"
+		return iceTransportStateClosedStr
 	default:
-		return unknownStr
+		return ErrUnknownType.Error()
 	}
 }
 
@@ -84,7 +118,7 @@ func newICETransportStateFromICE(i ice.ConnectionState) ICETransportState {
 	case ice.ConnectionStateClosed:
 		return ICETransportStateClosed
 	default:
-		return ICETransportState(Unknown)
+		return ICETransportStateUnknown
 	}
 }
 
@@ -105,6 +139,17 @@ func (c ICETransportState) toICE() ice.ConnectionState {
 	case ICETransportStateClosed:
 		return ice.ConnectionStateClosed
 	default:
-		return ice.ConnectionState(Unknown)
+		return ice.ConnectionStateUnknown
 	}
+}
+
+// MarshalText implements encoding.TextMarshaler
+func (c ICETransportState) MarshalText() ([]byte, error) {
+	return []byte(c.String()), nil
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler
+func (c *ICETransportState) UnmarshalText(b []byte) error {
+	*c = newICETransportState(string(b))
+	return nil
 }

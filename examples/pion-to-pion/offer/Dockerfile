@@ -1,9 +1,8 @@
 # SPDX-FileCopyrightText: 2023 The Pion community <https://pion.ly>
 # SPDX-License-Identifier: MIT
 
-FROM golang:1.20
+FROM golang:1.23
 
-ENV GO111MODULE=on
-RUN go install github.com/pion/webrtc/v3/examples/pion-to-pion/offer@latest
+RUN go install github.com/pion/webrtc/v4/examples/pion-to-pion/offer@latest
 
 CMD ["offer"]

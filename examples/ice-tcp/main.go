@@ -16,7 +16,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/pion/webrtc/v3"
+	"github.com/pion/webrtc/v4"
 )
 
 var api *webrtc.API //nolint
@@ -38,7 +38,7 @@ func doSignaling(w http.ResponseWriter, r *http.Request) {
 		d.OnOpen(func() {
 			for range time.Tick(time.Second * 3) {
 				if err = d.SendText(time.Now().String()); err != nil {
-					if errors.Is(io.ErrClosedPipe, err) {
+					if errors.Is(err, io.ErrClosedPipe) {
 						return
 					}
 					panic(err)

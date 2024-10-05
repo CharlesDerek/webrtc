@@ -11,12 +11,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pion/webrtc/v3/pkg/media"
+	"github.com/pion/sdp/v3"
+	"github.com/pion/webrtc/v4/pkg/media"
 	"github.com/stretchr/testify/assert"
 )
 
 func TestSetRTPParameters(t *testing.T) {
-	sender, receiver, wan := createVNetPair(t)
+	sender, receiver, wan := createVNetPair(t, nil)
 
 	outgoingTrack, err := NewTrackLocalStaticSample(RTPCodecCapability{MimeType: MimeTypeVP8}, "video", "pion")
 	assert.NoError(t, err)
@@ -34,14 +35,14 @@ func TestSetRTPParameters(t *testing.T) {
 			},
 		},
 		HeaderExtensions: []RTPHeaderExtensionParameter{
-			{URI: "urn:ietf:params:rtp-hdrext:sdes:mid"},
-			{URI: "urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id"},
-			{URI: "urn:ietf:params:rtp-hdrext:sdes:repaired-rtp-stream-id"},
+			{URI: sdp.SDESMidURI},
+			{URI: sdp.SDESRTPStreamIDURI},
+			{URI: sdesRepairRTPStreamIDURI},
 		},
 	}
 
 	seenPacket, seenPacketCancel := context.WithCancel(context.Background())
-	receiver.OnTrack(func(trackRemote *TrackRemote, r *RTPReceiver) {
+	receiver.OnTrack(func(_ *TrackRemote, r *RTPReceiver) {
 		r.SetRTPParameters(p)
 
 		incomingTrackCodecs := r.Track().Codec()

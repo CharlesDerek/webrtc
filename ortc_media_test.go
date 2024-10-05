@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pion/transport/v2/test"
-	"github.com/pion/webrtc/v3/pkg/media"
+	"github.com/pion/transport/v3/test"
+	"github.com/pion/webrtc/v4/pkg/media"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -25,9 +25,6 @@ func Test_ORTC_Media(t *testing.T) {
 
 	stackA, stackB, err := newORTCPair()
 	assert.NoError(t, err)
-
-	assert.NoError(t, stackA.api.mediaEngine.RegisterDefaultCodecs())
-	assert.NoError(t, stackB.api.mediaEngine.RegisterDefaultCodecs())
 
 	assert.NoError(t, signalORTCPair(stackA, stackB))
 

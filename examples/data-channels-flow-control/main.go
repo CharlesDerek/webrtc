@@ -12,7 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/pion/webrtc/v3"
+	"github.com/pion/webrtc/v4"
 )
 
 const (
@@ -70,7 +70,7 @@ func createOfferer() *webrtc.PeerConnection {
 			err2 := dc.Send(buf)
 			check(err2)
 
-			if dc.BufferedAmount()+uint64(len(buf)) > maxBufferedAmount {
+			if dc.BufferedAmount() > maxBufferedAmount {
 				// Wait until the bufferedAmount becomes lower than the threshold
 				<-sendMoreCh
 			}
@@ -113,7 +113,9 @@ func createAnswerer() *webrtc.PeerConnection {
 			since := time.Now()
 
 			// Start printing out the observed throughput
-			for range time.NewTicker(1000 * time.Millisecond).C {
+			ticker := time.NewTicker(1000 * time.Millisecond)
+			defer ticker.Stop()
+			for range ticker.C {
 				bps := float64(atomic.LoadUint64(&totalBytesReceived)*8) / time.Since(since).Seconds()
 				log.Printf("Throughput: %.03f Mbps", bps/1024/1024)
 			}
@@ -172,6 +174,12 @@ func main() {
 			fmt.Println("Peer Connection has gone to failed exiting")
 			os.Exit(0)
 		}
+
+		if s == webrtc.PeerConnectionStateClosed {
+			// PeerConnection was explicitly closed. This usually happens from a DTLS CloseNotify
+			fmt.Println("Peer Connection has gone to closed exiting")
+			os.Exit(0)
+		}
 	})
 
 	// Set the handler for Peer connection state
@@ -184,6 +192,12 @@ func main() {
 			// Use webrtc.PeerConnectionStateDisconnected if you are interested in detecting faster timeout.
 			// Note that the PeerConnection may come back from PeerConnectionStateDisconnected.
 			fmt.Println("Peer Connection has gone to failed exiting")
+			os.Exit(0)
+		}
+
+		if s == webrtc.PeerConnectionStateClosed {
+			// PeerConnection was explicitly closed. This usually happens from a DTLS CloseNotify
+			fmt.Println("Peer Connection has gone to closed exiting")
 			os.Exit(0)
 		}
 	})

@@ -25,12 +25,13 @@ type API struct {
 }
 
 // NewAPI Creates a new API object for keeping semi-global settings to WebRTC objects
+//
+// It uses the default Codecs and Interceptors unless you customize them
+// using WithMediaEngine and WithInterceptorRegistry respectively.
 func NewAPI(options ...func(*API)) *API {
 	a := &API{
-		interceptor:         &interceptor.NoOp{},
-		settingEngine:       &SettingEngine{},
-		mediaEngine:         &MediaEngine{},
-		interceptorRegistry: &interceptor.Registry{},
+		interceptor:   &interceptor.NoOp{},
+		settingEngine: &SettingEngine{},
 	}
 
 	for _, o := range options {
@@ -39,6 +40,24 @@ func NewAPI(options ...func(*API)) *API {
 
 	if a.settingEngine.LoggerFactory == nil {
 		a.settingEngine.LoggerFactory = logging.NewDefaultLoggerFactory()
+	}
+
+	logger := a.settingEngine.LoggerFactory.NewLogger("api")
+
+	if a.mediaEngine == nil {
+		a.mediaEngine = &MediaEngine{}
+		err := a.mediaEngine.RegisterDefaultCodecs()
+		if err != nil {
+			logger.Errorf("Failed to register default codecs %s", err)
+		}
+	}
+
+	if a.interceptorRegistry == nil {
+		a.interceptorRegistry = &interceptor.Registry{}
+		err := RegisterDefaultInterceptors(a.mediaEngine, a.interceptorRegistry)
+		if err != nil {
+			logger.Errorf("Failed to register default interceptors %s", err)
+		}
 	}
 
 	return a

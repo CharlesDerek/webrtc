@@ -11,8 +11,9 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/pion/ice/v2"
+	"github.com/pion/ice/v4"
 	"github.com/pion/logging"
+	"github.com/pion/stun/v3"
 )
 
 // ICEGatherer gathers local host, server reflexive and relay
@@ -24,7 +25,7 @@ type ICEGatherer struct {
 	log   logging.LeveledLogger
 	state ICEGathererState
 
-	validatedServers []*ice.URL
+	validatedServers []*stun.URI
 	gatherPolicy     ICETransportPolicy
 
 	agent *ice.Agent
@@ -42,7 +43,7 @@ type ICEGatherer struct {
 // This constructor is part of the ORTC API. It is not
 // meant to be used together with the basic WebRTC API.
 func (api *API) NewICEGatherer(opts ICEGatherOptions) (*ICEGatherer, error) {
-	var validatedServers []*ice.URL
+	var validatedServers []*stun.URI
 	if len(opts.ICEServers) > 0 {
 		for _, server := range opts.ICEServers {
 			url, err := server.urls()
@@ -107,6 +108,7 @@ func (g *ICEGatherer) createAgent() error {
 		SrflxAcceptanceMinWait: g.api.settingEngine.timeout.ICESrflxAcceptanceMinWait,
 		PrflxAcceptanceMinWait: g.api.settingEngine.timeout.ICEPrflxAcceptanceMinWait,
 		RelayAcceptanceMinWait: g.api.settingEngine.timeout.ICERelayAcceptanceMinWait,
+		STUNGatherTimeout:      g.api.settingEngine.timeout.ICESTUNGatherTimeout,
 		InterfaceFilter:        g.api.settingEngine.candidates.InterfaceFilter,
 		IPFilter:               g.api.settingEngine.candidates.IPFilter,
 		NAT1To1IPs:             g.api.settingEngine.candidates.NAT1To1IPs,
@@ -120,6 +122,9 @@ func (g *ICEGatherer) createAgent() error {
 		TCPMux:                 g.api.settingEngine.iceTCPMux,
 		UDPMux:                 g.api.settingEngine.iceUDPMux,
 		ProxyDialer:            g.api.settingEngine.iceProxyDialer,
+		DisableActiveTCP:       g.api.settingEngine.iceDisableActiveTCP,
+		MaxBindingRequests:     g.api.settingEngine.iceMaxBindingRequests,
+		BindingRequestHandler:  g.api.settingEngine.iceBindingRequestHandler,
 	}
 
 	requestedNetworkTypes := g.api.settingEngine.candidates.ICENetworkTypes
@@ -185,13 +190,31 @@ func (g *ICEGatherer) Gather() error {
 
 // Close prunes all local candidates, and closes the ports.
 func (g *ICEGatherer) Close() error {
+	return g.close(false /* shouldGracefullyClose */)
+}
+
+// GracefulClose prunes all local candidates, and closes the ports. It also waits
+// for any goroutines it started to complete. This is only safe to call outside of
+// ICEGatherer callbacks or if in a callback, in its own goroutine.
+func (g *ICEGatherer) GracefulClose() error {
+	return g.close(true /* shouldGracefullyClose */)
+}
+
+func (g *ICEGatherer) close(shouldGracefullyClose bool) error {
 	g.lock.Lock()
 	defer g.lock.Unlock()
 
 	if g.agent == nil {
 		return nil
-	} else if err := g.agent.Close(); err != nil {
-		return err
+	}
+	if shouldGracefullyClose {
+		if err := g.agent.GracefulClose(); err != nil {
+			return err
+		}
+	} else {
+		if err := g.agent.Close(); err != nil {
+			return err
+		}
 	}
 
 	g.agent = nil
@@ -345,7 +368,6 @@ func (g *ICEGatherer) collectStats(collector *statsReportCollector) {
 				Timestamp:     statsTimestampFrom(candidateStats.Timestamp),
 				ID:            candidateStats.ID,
 				Type:          StatsTypeLocalCandidate,
-				NetworkType:   networkType,
 				IP:            candidateStats.IP,
 				Port:          int32(candidateStats.Port),
 				Protocol:      networkType.Protocol(),
@@ -374,7 +396,6 @@ func (g *ICEGatherer) collectStats(collector *statsReportCollector) {
 				Timestamp:     statsTimestampFrom(candidateStats.Timestamp),
 				ID:            candidateStats.ID,
 				Type:          StatsTypeRemoteCandidate,
-				NetworkType:   networkType,
 				IP:            candidateStats.IP,
 				Port:          int32(candidateStats.Port),
 				Protocol:      networkType.Protocol(),
